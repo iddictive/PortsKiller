@@ -8,6 +8,9 @@ final class AppModel: ObservableObject {
     @Published var selectedLogProjectID: UUID?
     @Published var lastError: String?
     @Published var loginItemEnabled: Bool = false
+    @Published var processViewMode: ProcessViewMode = .dev {
+        didSet { refresh() }
+    }
 
     let runner = ManagedProcessRunner()
 
@@ -27,7 +30,11 @@ final class AppModel: ObservableObject {
     }
 
     func refresh() {
-        processes = scanner.scan(manualProjects: projects)
+        processes = scanner.scan(manualProjects: projects, mode: processViewMode)
+    }
+
+    var unknownProcessCount: Int {
+        processes.filter { $0.kind == .unknown }.count
     }
 
     func addProject(_ project: ManualProject) {

@@ -1,10 +1,15 @@
 import Foundation
 
 final class ProcessScanner {
-    private let excludedCommands = [
-        "airplay", "airport", "controlcenter", "dropbox", "figma", "firefox",
-        "google chrome", "linear helper", "rapportd", "safari", "sharingd",
-        "ssh", "spoofdpi", "syncthing"
+    private let systemTokens = [
+        "airplay", "airport", "controlcenter", "rapportd", "safari", "sharingd",
+        "ssh", "universalcontrol", "identityservices",
+        "knowledgeconstructiond", "rapport", "remoted", "screensharing"
+    ]
+
+    private let desktopAppTokens = [
+        "dropbox", "figma", "firefox", "google chrome", "google drive",
+        "linear helper", "spoofdpi", "syncthing"
     ]
 
     private let devTokens = [
@@ -14,7 +19,22 @@ final class ProcessScanner {
         "node"
     ]
 
-    func scan(manualProjects: [ManualProject]) -> [DevProcess] {
+    private let jsToolTokens = [
+        " npm ", "/npm ", " pnpm ", "/pnpm ", " yarn ", "/yarn ", " bun ", "/bun ",
+        "node", "tsx", "playwright", "vite-node"
+    ]
+
+    private let mcpServerTokens = [
+        "/mcp/", "/mcp ", " mcp ", " mcp-", "/mcp-",
+        "mcp-server", "modelcontextprotocol", "@modelcontextprotocol"
+    ]
+
+    private let localServiceTokens = [
+        "postgres", "redis", "mysql", "mongod", "nginx", "caddy", "ollama",
+        "python", "uvicorn", "gunicorn", "ruby", "rails", "php", "java"
+    ]
+
+    func scan(manualProjects: [ManualProject], mode: ProcessViewMode = .dev) -> [DevProcess] {
         let listeners = listeningPorts()
         let processMap = processSnapshots()
         let resourceMap = resourceSnapshots()
@@ -22,16 +42,18 @@ final class ProcessScanner {
             partial[snapshot.parentPID, default: []].append(snapshot.pid)
         }
         var result: [DevProcess] = []
+        var seenListeners = Set<String>()
 
         for listener in listeners {
             guard let snapshot = processMap[listener.pid] else { continue }
+            guard seenListeners.insert("\(listener.pid):\(listener.port)").inserted else { continue }
             let initialCombined = "\(listener.executable) \(snapshot.executable) \(snapshot.command)"
-            guard containsDevToken(initialCombined), !containsExcludedToken(initialCombined) else { continue }
 
             let cwd = cwd(for: listener.pid)
             let combined = "\(snapshot.executable) \(snapshot.command) \(cwd ?? "")"
+            let kind = classify(combined: "\(initialCombined) \(combined)", cwd: cwd)
 
-            guard isLikelyDevProcess(combined: combined, cwd: cwd) else { continue }
+            if mode == .dev, kind != .dev { continue }
 
             let matchedProject = manualProjects.first { project in
                 project.port == listener.port || normalized(project.cwd) == normalized(cwd ?? "")
@@ -39,8 +61,7 @@ final class ProcessScanner {
 
             let projectName = matchedProject?.name
                 ?? packageName(in: cwd)
-                ?? URL(fileURLWithPath: cwd ?? snapshot.executable).lastPathComponent
-                .emptyFallback(snapshot.executable)
+                ?? displayName(cwd: cwd, executable: snapshot.executable, listenerExecutable: listener.executable)
 
             result.append(
                 DevProcess(
@@ -52,7 +73,8 @@ final class ProcessScanner {
                     executable: snapshot.executable,
                     command: snapshot.command,
                     cwd: cwd,
-                    framework: frameworkName(from: combined, cwd: cwd),
+                    framework: frameworkName(from: combined, cwd: cwd, executable: snapshot.executable, listenerExecutable: listener.executable),
+                    kind: kind,
                     resources: aggregateResources(rootPID: listener.pid, resources: resourceMap, children: childMap),
                     projectID: matchedProject?.id
                 )
@@ -60,6 +82,9 @@ final class ProcessScanner {
         }
 
         return result.sorted {
+            if $0.kind.sortPriority != $1.kind.sortPriority {
+                return $0.kind.sortPriority < $1.kind.sortPriority
+            }
             if $0.name == $1.name { return $0.port < $1.port }
             return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
         }
@@ -174,28 +199,42 @@ final class ProcessScanner {
 
     private func isLikelyDevProcess(combined: String, cwd: String?) -> Bool {
         let value = " \(combined.lowercased()) "
-        if excludedCommands.contains(where: { value.contains($0) }) { return false }
+        if isLikelyMCPProcess(combined: combined) {
+            return true
+        }
+        if systemTokens.contains(where: { value.contains($0) }) || desktopAppTokens.contains(where: { value.contains($0) }) {
+            return false
+        }
+        if isDevFrameworkProject(cwd: cwd), jsToolTokens.contains(where: { value.contains($0) }) {
+            return true
+        }
         if devTokens.contains(where: { value.contains($0) }) {
             if value.contains(" node ") || value.contains("/node ") {
-                return hasPackageJSON(cwd: cwd) || value.contains("vite") || value.contains("next") || value.contains("server")
+                return value.contains("vite")
+                    || value.contains("next")
+                    || value.contains("server")
+                    || (hasPackageJSON(cwd: cwd) && isDevFrameworkProject(cwd: cwd))
             }
             return true
         }
         return false
     }
 
-    private func containsDevToken(_ value: String) -> Bool {
-        let normalized = " \(value.lowercased()) "
-        return devTokens.contains(where: { normalized.contains($0) })
+    private func classify(combined: String, cwd: String?) -> ProcessKind {
+        let value = " \(combined.lowercased()) "
+        if isLikelyDevProcess(combined: combined, cwd: cwd) { return .dev }
+        if desktopAppTokens.contains(where: { value.contains($0) }) { return .desktopApp }
+        if isLikelyMCPProcess(combined: combined) || jsToolTokens.contains(where: { value.contains($0) }) || hasPackageJSON(cwd: cwd) { return .jsTool }
+        if localServiceTokens.contains(where: { value.contains($0) }) { return .localService }
+        if systemTokens.contains(where: { value.contains($0) }) || value.contains("/system/") || value.contains("/usr/libexec/") {
+            return .system
+        }
+        return .unknown
     }
 
-    private func containsExcludedToken(_ value: String) -> Bool {
-        let normalized = " \(value.lowercased()) "
-        return excludedCommands.contains(where: { normalized.contains($0) })
-    }
-
-    private func frameworkName(from combined: String, cwd: String?) -> String {
+    private func frameworkName(from combined: String, cwd: String?, executable: String, listenerExecutable: String) -> String {
         let value = combined.lowercased()
+        if isLikelyMCPProcess(combined: combined) { return "MCP" }
         if value.contains("next") || packageJSON(in: cwd)?.dependenciesContain("next") == true { return "Next.js" }
         if value.contains("vite") || packageJSON(in: cwd)?.dependenciesContain("vite") == true { return "Vite" }
         if value.contains("astro") || packageJSON(in: cwd)?.dependenciesContain("astro") == true { return "Astro" }
@@ -203,7 +242,13 @@ final class ProcessScanner {
         if value.contains("nodemon") { return "Nodemon" }
         if value.contains("tsx") { return "TSX" }
         if value.contains("bun") { return "Bun" }
-        return "Node"
+        if value.contains("node") { return "Node" }
+        return listenerExecutable.emptyFallback(URL(fileURLWithPath: executable).lastPathComponent)
+    }
+
+    private func isLikelyMCPProcess(combined: String) -> Bool {
+        let value = " \(combined.lowercased()) "
+        return mcpServerTokens.contains { value.contains($0) }
     }
 
     private func packageName(in cwd: String?) -> String? {
@@ -213,6 +258,11 @@ final class ProcessScanner {
     private func hasPackageJSON(cwd: String?) -> Bool {
         guard let cwd else { return false }
         return FileManager.default.fileExists(atPath: URL(fileURLWithPath: cwd).appendingPathComponent("package.json").path)
+    }
+
+    private func isDevFrameworkProject(cwd: String?) -> Bool {
+        guard let package = packageJSON(in: cwd) else { return false }
+        return ["vite", "next", "astro", "nuxt"].contains { package.dependenciesContain($0) }
     }
 
     private func packageJSON(in cwd: String?) -> [String: Any]? {
@@ -233,6 +283,20 @@ final class ProcessScanner {
 
     private func normalized(_ path: String) -> String {
         URL(fileURLWithPath: path).standardizedFileURL.path
+    }
+
+    private func displayName(cwd: String?, executable: String, listenerExecutable: String) -> String {
+        if let cwd {
+            let name = URL(fileURLWithPath: cwd).lastPathComponent
+            if !name.isEmpty && name != "/" { return name }
+        }
+
+        if !listenerExecutable.isEmpty && listenerExecutable != "/" { return listenerExecutable }
+
+        let executableName = URL(fileURLWithPath: executable).lastPathComponent
+        if !executableName.isEmpty && executableName != "/" { return executableName }
+
+        return listenerExecutable.emptyFallback("pid")
     }
 }
 

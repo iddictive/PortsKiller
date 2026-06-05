@@ -12,6 +12,7 @@ struct DevProcess: Identifiable, Hashable {
     let command: String
     let cwd: String?
     let framework: String
+    let kind: ProcessKind
     let resources: ResourceUsage
     let projectID: UUID?
 
@@ -21,6 +22,55 @@ struct DevProcess: Identifiable, Hashable {
 
     var canRestart: Bool {
         projectID != nil
+    }
+
+    var canStop: Bool {
+        kind != .system
+    }
+}
+
+enum ProcessViewMode: String, CaseIterable, Identifiable {
+    case dev
+    case all
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .dev: return "Dev"
+        case .all: return "All"
+        }
+    }
+}
+
+enum ProcessKind: String, Hashable {
+    case dev
+    case jsTool
+    case localService
+    case desktopApp
+    case system
+    case unknown
+
+    var title: String {
+        switch self {
+        case .dev: return "Dev"
+        case .jsTool: return "JS Tool"
+        case .localService: return "Service"
+        case .desktopApp: return "App"
+        case .system: return "System"
+        case .unknown: return "Unknown"
+        }
+    }
+
+    var sortPriority: Int {
+        switch self {
+        case .unknown: return 0
+        case .dev: return 1
+        case .jsTool: return 2
+        case .localService: return 3
+        case .desktopApp: return 4
+        case .system: return 5
+        }
     }
 }
 

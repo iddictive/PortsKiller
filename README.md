@@ -1,6 +1,6 @@
 # PortsKiller
 
-Native macOS menu bar app for finding and controlling local JavaScript dev servers.
+Native macOS menu bar app for finding and controlling local JavaScript dev servers and local TCP listeners.
 
 ## Build
 
@@ -21,10 +21,10 @@ open .build/PortsKiller.app
 - Scans listening TCP ports with `lsof -nP -iTCP -sTCP:LISTEN`.
 - Reads process command and parent PID with `ps`.
 - Reads cwd with `lsof -a -p <pid> -d cwd -Fn`.
-- Filters for JS/dev processes such as `node`, `npm`, `pnpm`, `yarn`, `bun`, `vite`, `next`, `astro`, `nuxt`, `tsx`, and `nodemon`.
-- Excludes common system and desktop app listeners.
+- Dev mode filters for JS/dev processes such as `node`, `npm`, `pnpm`, `yarn`, `bun`, `vite`, `next`, `astro`, `nuxt`, `tsx`, and `nodemon`.
+- All mode shows every listening TCP process and classifies it as Dev, JS Tool, Service, App, System, or Unknown.
 - Opens and copies `http://localhost:<port>`.
-- Stops a process tree by sending `TERM` to descendants and parent, then `KILL` if needed.
+- Stops non-system process trees by sending `TERM` to descendants and parent, then `KILL` if needed.
 - Restarts manually saved projects from `cwd + command`.
 - Captures logs for processes launched by PortsKiller.
 

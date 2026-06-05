@@ -4,13 +4,14 @@ import SwiftUI
 @main
 enum PortsKillerMain {
     static func main() {
-        if CommandLine.arguments.contains("--scan-once") {
+        if CommandLine.arguments.contains("--scan-once") || CommandLine.arguments.contains("--scan-all") {
             let projects = ProjectStore().load()
-            let processes = ProcessScanner().scan(manualProjects: projects)
+            let mode: ProcessViewMode = CommandLine.arguments.contains("--scan-all") ? .all : .dev
+            let processes = ProcessScanner().scan(manualProjects: projects, mode: mode)
             for process in processes {
                 let memory = String(format: "%.0fM", process.resources.memoryMegabytes)
                 let cpu = String(format: "%.1f%%", process.resources.cpuPercent)
-                print("\(process.name)\t:\(process.port)\tpid=\(process.pid)\t\(process.framework)\tcpu=\(cpu)\tram=\(memory)\tup=\(process.resources.uptime)\t\(process.urlString)")
+                print("\(process.kind.title)\t\(process.name)\t:\(process.port)\tpid=\(process.pid)\t\(process.framework)\tcpu=\(cpu)\tram=\(memory)\tup=\(process.resources.uptime)\t\(process.urlString)")
             }
             exit(0)
         }
@@ -27,7 +28,7 @@ struct PortsKillerApp: App {
             MenuContentView()
                 .environmentObject(model)
         } label: {
-            MenuBarIcon(count: model.processes.count)
+            MenuBarIcon(count: model.processes.count, unknownCount: model.unknownProcessCount)
         }
         .menuBarExtraStyle(.window)
 
@@ -46,6 +47,7 @@ struct PortsKillerApp: App {
 
 private struct MenuBarIcon: View {
     let count: Int
+    let unknownCount: Int
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
@@ -60,12 +62,12 @@ private struct MenuBarIcon: View {
                     .foregroundStyle(.white)
                     .padding(.horizontal, count > 9 ? 3 : 4)
                     .frame(height: 11)
-                    .background(Color.green, in: Capsule())
+                    .background(unknownCount > 0 ? Color.red : Color.green, in: Capsule())
                     .offset(x: 5, y: -3)
             }
         }
         .frame(width: 28, height: 18)
-        .accessibilityLabel("Dev processes: \(count)")
+        .accessibilityLabel("Processes: \(count), unknown: \(unknownCount)")
     }
 
     private var countText: String {

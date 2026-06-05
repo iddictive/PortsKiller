@@ -61,16 +61,25 @@ struct MenuContentView: View {
                 .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 7))
 
             VStack(alignment: .leading, spacing: 1) {
-                Text("Dev Processes")
+                Text("Processes")
                     .font(.system(size: 14, weight: .semibold))
-                Text("Local TCP listeners")
+                Text(model.processViewMode == .dev ? "JS TCP listeners" : "All TCP listeners")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
             Spacer()
 
-            CountBadge(count: model.processes.count)
+            Picker("", selection: $model.processViewMode) {
+                ForEach(ProcessViewMode.allCases) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            .frame(width: 112)
+
+            CountBadge(count: model.processes.count, unknownCount: model.unknownProcessCount)
         }
     }
 
@@ -113,14 +122,16 @@ private enum MenuPanel {
 }
 
 private struct EmptyStateView: View {
+    @EnvironmentObject private var model: AppModel
+
     var body: some View {
         VStack(spacing: 8) {
             Image(systemName: "network.slash")
                 .font(.system(size: 24, weight: .medium))
                 .foregroundStyle(.secondary)
-            Text("No dev servers found")
+            Text(model.processViewMode == .dev ? "No dev servers found" : "No listeners found")
                 .font(.system(size: 13, weight: .medium))
-            Text("Refresh or add a project to start one.")
+            Text(model.processViewMode == .dev ? "Refresh or add a project to start one." : "Refresh to scan local TCP ports.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -158,11 +169,13 @@ private struct ProcessRow: View {
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
 
-                Text(verbatim: compactCommand(process.command))
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                if let command = visibleCommand(process.command) {
+                    Text(verbatim: command)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
             }
 
             if let projectID = process.projectID {
@@ -190,14 +203,13 @@ private struct ProcessRow: View {
                         .font(.system(size: 13, weight: .semibold))
                         .lineLimit(1)
                         .truncationMode(.tail)
-
-                    Text(verbatim: ":\(process.port)")
-                        .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(.secondary)
                 }
 
                 HStack(spacing: 6) {
                     Text(process.framework)
+                    if model.processViewMode == .all {
+                        KindBadge(kind: process.kind)
+                    }
                     if let cwd = process.cwd {
                         Text(URL(fileURLWithPath: cwd).lastPathComponent)
                     }
@@ -219,7 +231,7 @@ private struct ProcessRow: View {
             IconActionButton("Restart", systemImage: "arrow.clockwise", disabled: !process.canRestart) {
                 model.restart(process)
             }
-            IconActionButton("Stop", systemImage: "stop.fill", role: .destructive) {
+            IconActionButton("Stop", systemImage: "stop.fill", role: .destructive, disabled: !process.canStop) {
                 model.stop(process)
             }
         }
@@ -323,6 +335,30 @@ private struct StatusDot: View {
     }
 }
 
+private struct KindBadge: View {
+    let kind: ProcessKind
+
+    var body: some View {
+        Text(kind.title)
+            .font(.system(size: 9, weight: .semibold))
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .foregroundStyle(color)
+            .background(color.opacity(0.12), in: Capsule())
+    }
+
+    private var color: Color {
+        switch kind {
+        case .dev: return .green
+        case .jsTool: return .blue
+        case .localService: return .orange
+        case .desktopApp: return .secondary
+        case .system: return .secondary
+        case .unknown: return .red
+        }
+    }
+}
+
 private struct IconActionButton: View {
     let title: String
     let systemImage: String
@@ -365,19 +401,30 @@ private struct IconActionButton: View {
 
 private struct CountBadge: View {
     let count: Int
+    let unknownCount: Int
 
     var body: some View {
         HStack(spacing: 6) {
             Circle()
-                .fill(count == 0 ? Color.secondary : Color.green)
+                .fill(dotColor)
                 .frame(width: 7, height: 7)
             Text("\(count) active")
                 .font(.system(size: 12, weight: .semibold))
                 .monospacedDigit()
+            if unknownCount > 0 {
+                Text(verbatim: "\(unknownCount)?")
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundStyle(.red)
+            }
         }
         .padding(.horizontal, 9)
         .padding(.vertical, 5)
         .background(Color(nsColor: .controlBackgroundColor), in: Capsule())
+    }
+
+    private var dotColor: Color {
+        if unknownCount > 0 { return .red }
+        return count == 0 ? .secondary : .green
     }
 }
 
@@ -834,4 +881,11 @@ private func compactCommand(_ command: String) -> String {
     command
         .replacingOccurrences(of: "next-server ", with: "")
         .trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+private func visibleCommand(_ command: String) -> String? {
+    let compact = compactCommand(command)
+    guard !compact.isEmpty else { return nil }
+    if compact.hasPrefix("(") && compact.hasSuffix(")") { return nil }
+    return compact
 }
