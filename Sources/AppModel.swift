@@ -24,6 +24,7 @@ final class AppModel: ObservableObject {
         projects = store.load()
         loginItemEnabled = loginItemManager.isEnabled
         refresh()
+        GitHubUpdater.shared.checkForUpdates()
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 4, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
         }

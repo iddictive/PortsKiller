@@ -75,7 +75,7 @@ Build the executable:
 swift build
 ```
 
-Create a runnable menu bar app bundle:
+Create a runnable menu bar app bundle and a versioned DMG:
 
 ```bash
 chmod +x scripts/build-app.sh
