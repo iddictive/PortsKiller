@@ -80,7 +80,14 @@ final class AppModel: ObservableObject {
     }
 
     func restart(_ process: DevProcess) {
-        guard let projectID = process.projectID, let project = projects.first(where: { $0.id == projectID }) else { return }
+        let project: ManualProject?
+        if let projectID = process.projectID {
+            project = projects.first(where: { $0.id == projectID })
+        } else {
+            project = process.inferredRestartProject
+        }
+
+        guard let project else { return }
         processController.terminateTree(rootPID: process.pid)
         runner.start(project)
         selectedLogProjectID = project.id

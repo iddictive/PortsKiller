@@ -49,6 +49,15 @@ final class PackageScriptInspector {
         }
     }
 
+    func restartCommand(cwd: String, port: Int) -> String? {
+        guard
+            let info = inspect(cwd: cwd),
+            let script = preferredRestartScript(from: info.scripts, port: port)
+        else { return nil }
+
+        return command(packageManager: info.packageManager, scriptName: script.name)
+    }
+
     private func packageManager(in folderURL: URL) -> String {
         let fileManager = FileManager.default
         if fileManager.fileExists(atPath: folderURL.appendingPathComponent("pnpm-lock.yaml").path) { return "pnpm" }
@@ -80,6 +89,19 @@ final class PackageScriptInspector {
         }
 
         return nil
+    }
+
+    private func preferredRestartScript(from scripts: [PackageScript], port: Int) -> PackageScript? {
+        let preferredNames = ["dev", "start", "serve", "preview", "storybook"]
+        let preferredScripts = preferredNames.compactMap { name in
+            scripts.first { $0.name == name }
+        }
+
+        return preferredScripts.first { scriptMentionsPort($0.body, port: port) } ?? preferredScripts.first
+    }
+
+    private func scriptMentionsPort(_ body: String, port: Int) -> Bool {
+        body.range(of: "\\b\(port)\\b", options: .regularExpression) != nil
     }
 
     private func scriptSort(_ lhs: PackageScript, _ rhs: PackageScript) -> Bool {

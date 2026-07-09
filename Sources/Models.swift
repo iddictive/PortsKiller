@@ -21,11 +21,17 @@ struct DevProcess: Identifiable, Hashable {
     }
 
     var canRestart: Bool {
-        projectID != nil
+        projectID != nil || inferredRestartProject != nil
     }
 
     var canStop: Bool {
         kind != .system
+    }
+
+    var inferredRestartProject: ManualProject? {
+        guard projectID == nil, kind == .dev, let cwd else { return nil }
+        guard let command = PackageScriptInspector().restartCommand(cwd: cwd, port: port) else { return nil }
+        return ManualProject(name: name, cwd: cwd, command: command, port: port)
     }
 }
 
