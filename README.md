@@ -1,7 +1,7 @@
 # PortsKiller
 
 <p align="center">
-  <img src="assets/app-icon.png" alt="PortsKiller app icon" width="124">
+  <img src="https://github.com/iddictive/PortsKiller/releases/download/v0.1.0/app-icon.png" alt="PortsKiller app icon" width="124">
 </p>
 
 <p align="center">
@@ -23,7 +23,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/interface-menu.png" alt="PortsKiller menu bar interface" width="760">
+  <img src="https://github.com/iddictive/PortsKiller/releases/download/v0.1.0/interface-menu.png" alt="PortsKiller menu bar interface" width="760">
 </p>
 
 PortsKiller lives in the menu bar and keeps the noisy part of local development visible: ports, PIDs, commands, project folders, CPU/RAM usage, uptime, logs, and one-click process actions.
