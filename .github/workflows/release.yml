@@ -1,0 +1,52 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version without the v prefix"
+        required: false
+
+jobs:
+  build:
+    name: Build and Release
+    runs-on: macos-15
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve Version
+        run: |
+          set -euo pipefail
+          source scripts/version.sh
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          elif [[ "$GITHUB_REF_TYPE" = "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="$(next_release_version)"
+          fi
+          echo "PORTSKILLER_VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Build App and DMG
+        run: scripts/build-app.sh
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.PORTSKILLER_VERSION }}
+          name: PortsKiller v${{ env.PORTSKILLER_VERSION }}
+          files: .build/PortsKiller-${{ env.PORTSKILLER_VERSION }}.dmg
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

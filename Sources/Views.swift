@@ -793,6 +793,7 @@ struct AddProjectWindowView: View {
 struct PreferencesView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var updater = GitHubUpdater.shared
     var onClose: (() -> Void)? = nil
 
     var body: some View {
@@ -830,6 +831,66 @@ struct PreferencesView: View {
                                 )
                             )
                             .labelsHidden()
+                        }
+                    }
+
+                    SettingsBlock {
+                        VStack(alignment: .leading, spacing: 12) {
+                            HStack(spacing: 10) {
+                                Image(systemName: "arrow.down.circle")
+                                    .font(.system(size: 18, weight: .semibold))
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 28, height: 28)
+
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Software updates")
+                                        .font(.system(size: 13, weight: .semibold))
+                                    Text(updateStatusText)
+                                        .font(.caption)
+                                        .foregroundStyle(updateStatusColor)
+                                        .lineLimit(2)
+                                }
+
+                                Spacer()
+
+                                Button {
+                                    updater.checkForUpdates(manual: true)
+                                } label: {
+                                    Label(updater.isChecking ? "Checking" : "Check", systemImage: "arrow.clockwise")
+                                }
+                                .disabled(updater.isChecking)
+                                .controlSize(.small)
+                            }
+
+                            Toggle("Automatically check for updates", isOn: $updater.automaticallyChecksForUpdates)
+                                .font(.system(size: 12, weight: .medium))
+
+                            Toggle("Automatically download updates", isOn: $updater.automaticallyDownloadsUpdates)
+                                .font(.system(size: 12, weight: .medium))
+                                .disabled(!updater.automaticallyChecksForUpdates)
+
+                            if updater.isDownloading {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    ProgressView(value: updater.downloadProgress)
+                                    Text("Downloading update \(Int(updater.downloadProgress * 100))%")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                            } else if updater.updateAvailable {
+                                HStack(spacing: 8) {
+                                    Text("Version \(updater.latestVersion ?? "") is available")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    Spacer()
+                                    Button {
+                                        updater.startDownload()
+                                    } label: {
+                                        Label("Install", systemImage: "square.and.arrow.down")
+                                    }
+                                    .disabled(updater.downloadURL == nil)
+                                    .controlSize(.small)
+                                }
+                            }
                         }
                     }
 
@@ -873,6 +934,23 @@ struct PreferencesView: View {
         } else {
             dismiss()
         }
+    }
+
+    private var updateStatusText: String {
+        if let error = updater.error {
+            return error
+        }
+        if updater.isChecking {
+            return "Checking GitHub Releases..."
+        }
+        if let latestVersion = updater.latestVersion {
+            return "Installed \(updater.currentVersion), latest \(latestVersion)"
+        }
+        return "Installed \(updater.currentVersion)"
+    }
+
+    private var updateStatusColor: Color {
+        updater.error == nil ? Color.secondary : Color.red
     }
 }
 

@@ -74,6 +74,7 @@ final class ProcessScanner {
             }
 
             let projectName = matchedProject?.name
+                ?? mcpDisplayName(from: "\(initialCombined) \(combined)")
                 ?? packageName(in: cwd)
                 ?? displayName(cwd: cwd, executable: snapshot.executable, listenerExecutable: listener.executable)
 
@@ -420,6 +421,18 @@ final class ProcessScanner {
     private func isLikelyMCPProcess(combined: String) -> Bool {
         let value = " \(combined.lowercased()) "
         return mcpServerTokens.contains { value.contains($0) }
+    }
+
+    private func mcpDisplayName(from combined: String) -> String? {
+        combined
+            .split(whereSeparator: { $0 == " " || $0 == "\t" })
+            .compactMap { rawToken -> String? in
+                let token = String(rawToken).trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+                guard token.contains("/mcp/") || token.contains("/mcp-") else { return nil }
+                let name = URL(fileURLWithPath: token).deletingLastPathComponent().lastPathComponent
+                return name.isEmpty ? nil : name
+            }
+            .first
     }
 
     private func packageName(in cwd: String?) -> String? {
