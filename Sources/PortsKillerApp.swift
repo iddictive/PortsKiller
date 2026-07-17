@@ -50,7 +50,11 @@ struct PortsKillerApp: App {
             MenuContentView()
                 .environmentObject(model)
         } label: {
-            MenuBarIcon(resources: model.systemResources, hasWarning: model.unknownProcessCount > 0)
+            MenuBarIcon(
+                resources: model.systemResources,
+                metric: model.menuBarMetric,
+                hasWarning: model.unknownProcessCount > 0
+            )
         }
         .menuBarExtraStyle(.window)
 
@@ -69,6 +73,7 @@ struct PortsKillerApp: App {
 
 private struct MenuBarIcon: View {
     let resources: SystemResourceUsage
+    let metric: MenuBarMetric
     let hasWarning: Bool
 
     var body: some View {
@@ -76,8 +81,9 @@ private struct MenuBarIcon: View {
             Image(systemName: "terminal")
                 .font(.system(size: 13, weight: .semibold))
 
-            Text("CPU \(cpuText)")
-            Text("RAM \(memoryText)")
+            if let metricLabel = presentation.metricLabel {
+                Text(metricLabel)
+            }
 
             if hasWarning {
                 Circle()
@@ -88,15 +94,13 @@ private struct MenuBarIcon: View {
         .font(.system(size: 9, weight: .semibold, design: .monospaced))
         .monospacedDigit()
         .fixedSize()
-        .accessibilityLabel("System CPU \(cpuText), memory \(memoryText)\(hasWarning ? ", unknown listener detected" : "")")
+        .accessibilityLabel(presentation.accessibilityLabel(hasWarning: hasWarning))
     }
 
-    private var cpuText: String {
-        guard let cpu = resources.cpuPercent else { return "--" }
-        return String(format: "%.0f%%", cpu)
-    }
-
-    private var memoryText: String {
-        String(format: "%.0f%%", resources.memoryPercent)
+    private var presentation: MenuBarStatusPresentation {
+        MenuBarStatusPresentation(
+            resources: resources,
+            metric: metric
+        )
     }
 }

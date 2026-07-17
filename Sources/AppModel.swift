@@ -10,6 +10,9 @@ final class AppModel: ObservableObject {
     @Published var selectedLogProjectID: UUID?
     @Published var lastError: String?
     @Published var loginItemEnabled: Bool = false
+    @Published var menuBarMetric: MenuBarMetric = .cpu {
+        didSet { menuBarMetricPreferences.save(menuBarMetric) }
+    }
     @Published var processViewMode: ProcessViewMode = .dev {
         didSet { refresh() }
     }
@@ -21,10 +24,12 @@ final class AppModel: ObservableObject {
     private let processController = ProcessController()
     private let loginItemManager = LoginItemManager()
     private let systemResourceMonitor = SystemResourceMonitor()
+    private let menuBarMetricPreferences = MenuBarMetricPreferences()
     private var refreshTimer: Timer?
     private var resourceTimer: Timer?
 
     init() {
+        menuBarMetric = menuBarMetricPreferences.load()
         projects = store.load()
         loginItemEnabled = loginItemManager.isEnabled
         refreshSystemResources()

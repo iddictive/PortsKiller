@@ -835,6 +835,21 @@ struct PreferencesView: View {
                     }
 
                     SettingsBlock {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Menu bar metric")
+                                .font(.system(size: 13, weight: .semibold))
+
+                            Picker("Menu bar metric", selection: $model.menuBarMetric) {
+                                ForEach(MenuBarMetric.allCases) { metric in
+                                    Text(metric.title).tag(metric)
+                                }
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.segmented)
+                        }
+                    }
+
+                    SettingsBlock {
                         VStack(alignment: .leading, spacing: 12) {
                             HStack(spacing: 10) {
                                 Image(systemName: "arrow.down.circle")
