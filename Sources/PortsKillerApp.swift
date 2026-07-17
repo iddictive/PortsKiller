@@ -16,6 +16,28 @@ enum PortsKillerMain {
             exit(0)
         }
 
+        if CommandLine.arguments.contains("--scan-activity") {
+            for process in ProcessScanner().scanActivity() {
+                let memory = String(format: "%.0fM", process.resources.memoryMegabytes)
+                let cpu = String(format: "%.1f%%", process.resources.cpuPercent)
+                let pid = process.primaryPID.map(String.init) ?? "-"
+                print("\(process.kind.title)\t\(process.name)\tpid=\(pid)\tprocesses=\(process.processCount)\tcpu=\(cpu)\trss=\(memory)\tup=\(process.resources.uptime)\tstoppable=\(process.canStop ? "yes" : "no")")
+            }
+            exit(0)
+        }
+
+        if CommandLine.arguments.contains("--system-stats") {
+            let monitor = SystemResourceMonitor()
+            _ = monitor.sample()
+            Thread.sleep(forTimeInterval: 0.25)
+            let resources = monitor.sample()
+            let cpu = resources.cpuPercent.map { String(format: "%.1f%%", $0) } ?? "-"
+            let used = ByteCountFormatter.string(fromByteCount: Int64(clamping: resources.memoryUsedBytes), countStyle: .memory)
+            let total = ByteCountFormatter.string(fromByteCount: Int64(clamping: resources.memoryTotalBytes), countStyle: .memory)
+            print("cpu=\(cpu)\tram=\(used)/\(total)\tram_percent=\(String(format: "%.1f%%", resources.memoryPercent))")
+            exit(0)
+        }
+
         PortsKillerApp.main()
     }
 }
@@ -28,7 +50,7 @@ struct PortsKillerApp: App {
             MenuContentView()
                 .environmentObject(model)
         } label: {
-            MenuBarIcon(count: model.processes.count, unknownCount: model.unknownProcessCount)
+            MenuBarIcon(resources: model.systemResources, hasWarning: model.unknownProcessCount > 0)
         }
         .menuBarExtraStyle(.window)
 
@@ -46,31 +68,35 @@ struct PortsKillerApp: App {
 }
 
 private struct MenuBarIcon: View {
-    let count: Int
-    let unknownCount: Int
+    let resources: SystemResourceUsage
+    let hasWarning: Bool
 
     var body: some View {
-        ZStack(alignment: .topTrailing) {
+        HStack(spacing: 5) {
             Image(systemName: "terminal")
-                .font(.system(size: 15, weight: .semibold))
-                .frame(width: 24, height: 18)
+                .font(.system(size: 13, weight: .semibold))
 
-            if count > 0 {
-                Text(verbatim: countText)
-                    .font(.system(size: 8, weight: .bold, design: .rounded))
-                    .monospacedDigit()
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, count > 9 ? 3 : 4)
-                    .frame(height: 11)
-                    .background(unknownCount > 0 ? Color.red : Color.green, in: Capsule())
-                    .offset(x: 5, y: -3)
+            Text("CPU \(cpuText)")
+            Text("RAM \(memoryText)")
+
+            if hasWarning {
+                Circle()
+                    .fill(.red)
+                    .frame(width: 6, height: 6)
             }
         }
-        .frame(width: 28, height: 18)
-        .accessibilityLabel("Processes: \(count), unknown: \(unknownCount)")
+        .font(.system(size: 9, weight: .semibold, design: .monospaced))
+        .monospacedDigit()
+        .fixedSize()
+        .accessibilityLabel("System CPU \(cpuText), memory \(memoryText)\(hasWarning ? ", unknown listener detected" : "")")
     }
 
-    private var countText: String {
-        count > 99 ? "99+" : "\(count)"
+    private var cpuText: String {
+        guard let cpu = resources.cpuPercent else { return "--" }
+        return String(format: "%.0f%%", cpu)
+    }
+
+    private var memoryText: String {
+        String(format: "%.0f%%", resources.memoryPercent)
     }
 }

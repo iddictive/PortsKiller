@@ -1,6 +1,6 @@
 import Foundation
 
-final class ProcessController {
+final class ProcessController: @unchecked Sendable {
     func terminateTree(rootPID: Int32) {
         let children = childMap()
         let tree = descendants(of: rootPID, in: children)
@@ -15,6 +15,40 @@ final class ProcessController {
         for pid in ordered where isAlive(pid) {
             Darwin.kill(pid, SIGKILL)
         }
+    }
+
+    @discardableResult
+    func terminateValidatedTree(rootPID: Int32, expectedIdentity: ProcessIdentity) -> Bool {
+        guard
+            expectedIdentity.ownerUID == UInt32(getuid()),
+            ProcessIdentityReader.read(pid: rootPID) == expectedIdentity
+        else { return false }
+
+        let children = childMap()
+        let pids = Array(descendants(of: rootPID, in: children).reversed()) + [rootPID]
+        let targets: [(pid: Int32, identity: ProcessIdentity)] = pids.compactMap { pid in
+            guard
+                let identity = ProcessIdentityReader.read(pid: pid),
+                identity.ownerUID == expectedIdentity.ownerUID
+            else { return nil }
+            return (pid, identity)
+        }
+        guard targets.contains(where: { $0.pid == rootPID && $0.identity == expectedIdentity }) else {
+            return false
+        }
+
+        for target in targets {
+            guard ProcessIdentityReader.read(pid: target.pid) == target.identity else { continue }
+            Darwin.kill(target.pid, SIGTERM)
+        }
+
+        Thread.sleep(forTimeInterval: 0.6)
+
+        for target in targets where isAlive(target.pid) {
+            guard ProcessIdentityReader.read(pid: target.pid) == target.identity else { continue }
+            Darwin.kill(target.pid, SIGKILL)
+        }
+        return true
     }
 
     private func childMap() -> [Int32: [Int32]] {

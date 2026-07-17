@@ -26,7 +26,7 @@
   <img src="https://github.com/iddictive/PortsKiller/releases/download/v0.1.0/interface-menu.png" alt="PortsKiller menu bar interface" width="760">
 </p>
 
-PortsKiller lives in the menu bar and keeps the noisy part of local development visible: ports, PIDs, commands, project folders, CPU/RAM usage, uptime, logs, and one-click process actions.
+PortsKiller lives in the menu bar and keeps the noisy part of local development visible: ports, background simulators, heavy processes, PIDs, commands, project folders, CPU/RAM usage, uptime, logs, and one-click process actions.
 
 It is designed for developers who frequently run Vite, Next.js, Astro, Nuxt, Node, npm, pnpm, yarn, bun, tsx, nodemon, MCP servers, and other local listeners.
 
@@ -44,6 +44,9 @@ The current release is signed with an Apple Development identity and is not Deve
 - Scans listening TCP ports with `lsof -nP -iTCP -sTCP:LISTEN`.
 - Shows process name, framework, port URL, PID, command, cwd, CPU, RAM, and uptime.
 - Separates common JavaScript/dev listeners from the full TCP listener list.
+- Finds active Simulator/CoreSimulator and Android Emulator families even when they do not listen on a TCP port.
+- Shows the largest current CPU/RAM consumers in a dedicated Activity mode.
+- Keeps total system CPU and RAM usage visible in the macOS menu bar.
 - Opens or copies `http://localhost:<port>` from each row.
 - Reveals the detected project folder in Finder when cwd is available.
 - Stops non-system process trees with `TERM`, then `KILL` when needed.
@@ -56,7 +59,8 @@ The current release is signed with an Apple Development identity and is not Deve
 
 | Surface | What it does |
 | --- | --- |
-| Menu bar dropdown | Lists local listeners, switches between Dev and All TCP modes, refreshes the scan, and exposes quick actions. |
+| Menu bar dropdown | Switches between Dev listeners, all TCP ports, and resource-heavy background activity. |
+| Menu bar status | Shows current total CPU and RAM usage without opening the dropdown. |
 | Process row | Shows identity, URL, PID, resource usage, command context, and open/copy/reveal/restart/stop controls. |
 | Add Project | Starts from a folder, detects package scripts, and saves a runnable project command. |
 | Preferences | Controls launch-at-login and app behavior. |
@@ -90,6 +94,8 @@ After building, run:
 ```bash
 .build/debug/PortsKiller --scan-once
 .build/debug/PortsKiller --scan-all
+.build/debug/PortsKiller --scan-activity
+.build/debug/PortsKiller --system-stats
 ```
 
 The command line modes print detected listeners without launching the menu bar UI.
@@ -110,8 +116,9 @@ PortsKiller — нативное macOS menu bar приложение для ра
 
 Что есть:
 
-- список активных портов, PID, URL, cwd, command, CPU/RAM и uptime;
-- режим Dev listeners и режим All TCP listeners;
+- список активных портов, фоновых симуляторов, тяжёлых процессов, PID, URL, cwd, command, CPU/RAM и uptime;
+- режимы Dev listeners, Ports и Activity;
+- общий CPU и RAM прямо в строке меню macOS;
 - кнопки открыть URL, скопировать URL, показать папку, перезапустить или остановить процесс;
 - добавление проекта через выбор папки и чтение package scripts;
 - логи для процессов, запущенных из PortsKiller;

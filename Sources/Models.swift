@@ -38,13 +38,50 @@ struct DevProcess: Identifiable, Hashable {
 enum ProcessViewMode: String, CaseIterable, Identifiable {
     case dev
     case all
+    case activity
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .dev: return "Dev"
-        case .all: return "All"
+        case .all: return "Ports"
+        case .activity: return "Activity"
+        }
+    }
+}
+
+struct ActivityProcess: Identifiable, Hashable {
+    let id: String
+    let name: String
+    let detail: String
+    let command: String
+    let kind: ActivityProcessKind
+    let resources: ResourceUsage
+    let processCount: Int
+    let targetPIDs: [Int32]
+    let identity: ProcessIdentity?
+    let canStop: Bool
+
+    var primaryPID: Int32? {
+        targetPIDs.first
+    }
+}
+
+enum ActivityProcessKind: String, Hashable {
+    case simulator
+    case application
+    case developerTool
+    case system
+    case other
+
+    var title: String {
+        switch self {
+        case .simulator: return "Simulator"
+        case .application: return "App"
+        case .developerTool: return "Dev Tool"
+        case .system: return "System"
+        case .other: return "Process"
         }
     }
 }
@@ -92,6 +129,23 @@ struct ResourceUsage: Hashable {
     }
 }
 
+struct SystemResourceUsage: Hashable {
+    let cpuPercent: Double?
+    let memoryUsedBytes: UInt64
+    let memoryTotalBytes: UInt64
+
+    static let unavailable = SystemResourceUsage(
+        cpuPercent: nil,
+        memoryUsedBytes: 0,
+        memoryTotalBytes: ProcessInfo.processInfo.physicalMemory
+    )
+
+    var memoryPercent: Double {
+        guard memoryTotalBytes > 0 else { return 0 }
+        return min(Double(memoryUsedBytes) / Double(memoryTotalBytes) * 100, 100)
+    }
+}
+
 struct ManualProject: Identifiable, Codable, Hashable {
     var id: UUID
     var name: String
@@ -108,19 +162,13 @@ struct ManualProject: Identifiable, Codable, Hashable {
     }
 }
 
-struct ProcessInfoSnapshot {
+struct ProcessSnapshot {
     let pid: Int32
     let parentPID: Int32
+    let ownerUID: UInt32
     let executable: String
     let command: String
-}
-
-struct ProcessResourceSnapshot {
-    let pid: Int32
-    let parentPID: Int32
-    let cpuPercent: Double
-    let residentBytes: UInt64
-    let elapsedTime: String
+    let resources: ResourceUsage
 }
 
 struct ListeningPort {

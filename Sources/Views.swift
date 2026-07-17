@@ -27,11 +27,21 @@ struct MenuContentView: View {
 
             ScrollView {
                 LazyVStack(spacing: 8) {
-                    if model.processes.isEmpty {
-                        EmptyStateView()
+                    if model.processViewMode == .activity {
+                        if model.activityProcesses.isEmpty {
+                            EmptyStateView()
+                        } else {
+                            ForEach(model.activityProcesses) { process in
+                                ActivityProcessRow(process: process)
+                            }
+                        }
                     } else {
-                        ForEach(model.processes) { process in
-                            ProcessRow(process: process)
+                        if model.processes.isEmpty {
+                            EmptyStateView()
+                        } else {
+                            ForEach(model.processes) { process in
+                                ProcessRow(process: process)
+                            }
                         }
                     }
                 }
@@ -63,23 +73,31 @@ struct MenuContentView: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text("Processes")
                     .font(.system(size: 14, weight: .semibold))
-                Text(model.processViewMode == .dev ? "JS TCP listeners" : "All TCP listeners")
+                Text(headerSubtitle)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
             Spacer()
 
-            Picker("", selection: $model.processViewMode) {
+            Picker("Process mode", selection: $model.processViewMode) {
                 ForEach(ProcessViewMode.allCases) { mode in
                     Text(mode.title).tag(mode)
                 }
             }
             .labelsHidden()
             .pickerStyle(.segmented)
-            .frame(width: 112)
+            .frame(width: 184)
 
-            CountBadge(count: model.processes.count, unknownCount: model.unknownProcessCount)
+            CountBadge(count: model.displayedProcessCount, unknownCount: model.unknownProcessCount)
+        }
+    }
+
+    private var headerSubtitle: String {
+        switch model.processViewMode {
+        case .dev: return "JS TCP listeners"
+        case .all: return "All TCP listeners"
+        case .activity: return "Simulators and heavy processes"
         }
     }
 
@@ -105,6 +123,8 @@ struct MenuContentView: View {
 
             Spacer()
 
+            SystemResourceSummary(resources: model.systemResources)
+
             Button {
                 NSApplication.shared.terminate(nil)
             } label: {
@@ -129,14 +149,87 @@ private struct EmptyStateView: View {
             Image(systemName: "network.slash")
                 .font(.system(size: 24, weight: .medium))
                 .foregroundStyle(.secondary)
-            Text(model.processViewMode == .dev ? "No dev servers found" : "No listeners found")
+            Text(emptyTitle)
                 .font(.system(size: 13, weight: .medium))
-            Text(model.processViewMode == .dev ? "Refresh or add a project to start one." : "Refresh to scan local TCP ports.")
+            Text(emptyDetail)
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 28)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var emptyTitle: String {
+        switch model.processViewMode {
+        case .dev: return "No dev servers found"
+        case .all: return "No listeners found"
+        case .activity: return "No heavy background processes"
+        }
+    }
+
+    private var emptyDetail: String {
+        switch model.processViewMode {
+        case .dev: return "Refresh or add a project to start one."
+        case .all: return "Refresh to scan local TCP ports."
+        case .activity: return "Simulators appear here even without an open port."
+        }
+    }
+}
+
+private struct ActivityProcessRow: View {
+    @EnvironmentObject private var model: AppModel
+    let process: ActivityProcess
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 12) {
+                HStack(spacing: 9) {
+                    StatusDot(cpuPercent: process.resources.cpuPercent)
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(process.name)
+                            .font(.system(size: 13, weight: .semibold))
+                            .lineLimit(1)
+
+                        HStack(spacing: 6) {
+                            ActivityKindBadge(kind: process.kind)
+                            Text(process.detail)
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    }
+                }
+                .frame(width: 250, alignment: .leading)
+
+                ResourceMonitor(resources: process.resources, memoryLabel: "RSS")
+                    .frame(width: 188, alignment: .leading)
+
+                Spacer(minLength: 8)
+
+                if process.canStop {
+                    IconActionButton("Stop Simulator", systemImage: "stop.fill", role: .destructive) {
+                        model.stop(process)
+                    }
+                }
+            }
+
+            HStack(spacing: 8) {
+                if let pid = process.primaryPID {
+                    Text(verbatim: "PID \(pid)")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+
+                Text(verbatim: compactActivityCommand(process.command))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+        .padding(10)
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
     }
 }
@@ -240,12 +333,13 @@ private struct ProcessRow: View {
 
 private struct ResourceMonitor: View {
     let resources: ResourceUsage
+    var memoryLabel: String = "RAM"
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 8) {
                 MetricValue(label: "CPU", value: cpuText)
-                MetricValue(label: "RAM", value: memoryText)
+                MetricValue(label: memoryLabel, value: memoryText)
                 MetricValue(label: "UP", value: cleanUptime)
             }
 
@@ -253,7 +347,7 @@ private struct ResourceMonitor: View {
                 MiniMeter(value: min(resources.cpuPercent / 100, 1), tint: cpuTint)
                     .help("CPU \(cpuText)")
                 MiniMeter(value: min(resources.memoryMegabytes / 2048, 1), tint: .blue)
-                    .help("RAM \(memoryText)")
+                    .help("\(memoryLabel) \(memoryText)")
             }
         }
     }
@@ -359,6 +453,29 @@ private struct KindBadge: View {
     }
 }
 
+private struct ActivityKindBadge: View {
+    let kind: ActivityProcessKind
+
+    var body: some View {
+        Text(kind.title)
+            .font(.system(size: 9, weight: .semibold))
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .foregroundStyle(color)
+            .background(color.opacity(0.12), in: Capsule())
+    }
+
+    private var color: Color {
+        switch kind {
+        case .simulator: return .purple
+        case .application: return .blue
+        case .developerTool: return .orange
+        case .system: return .secondary
+        case .other: return .primary
+        }
+    }
+}
+
 private struct IconActionButton: View {
     let title: String
     let systemImage: String
@@ -425,6 +542,40 @@ private struct CountBadge: View {
     private var dotColor: Color {
         if unknownCount > 0 { return .red }
         return count == 0 ? .secondary : .green
+    }
+}
+
+private struct SystemResourceSummary: View {
+    let resources: SystemResourceUsage
+
+    var body: some View {
+        HStack(spacing: 9) {
+            Text("CPU \(cpuText)")
+                .help("Total system CPU")
+            Text("RAM \(memoryText)")
+                .help("Memory in use: \(memoryDetail)")
+        }
+        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+        .monospacedDigit()
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 5)
+        .background(Color(nsColor: .controlBackgroundColor), in: Capsule())
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("System CPU \(cpuText), memory \(memoryDetail)")
+    }
+
+    private var cpuText: String {
+        guard let cpu = resources.cpuPercent else { return "--" }
+        return String(format: "%.0f%%", cpu)
+    }
+
+    private var memoryText: String {
+        String(format: "%.0f%%", resources.memoryPercent)
+    }
+
+    private var memoryDetail: String {
+        "\(byteString(resources.memoryUsedBytes)) of \(byteString(resources.memoryTotalBytes))"
     }
 }
 
@@ -888,4 +1039,12 @@ private func visibleCommand(_ command: String) -> String? {
     guard !compact.isEmpty else { return nil }
     if compact.hasPrefix("(") && compact.hasSuffix(")") { return nil }
     return compact
+}
+
+private func compactActivityCommand(_ command: String) -> String {
+    command.replacingOccurrences(of: NSHomeDirectory(), with: "~")
+}
+
+private func byteString(_ bytes: UInt64) -> String {
+    ByteCountFormatter.string(fromByteCount: Int64(clamping: bytes), countStyle: .memory)
 }

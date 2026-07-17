@@ -4,6 +4,8 @@ import Foundation
 @MainActor
 final class AppModel: ObservableObject {
     @Published var processes: [DevProcess] = []
+    @Published var activityProcesses: [ActivityProcess] = []
+    @Published var systemResources: SystemResourceUsage = .unavailable
     @Published var projects: [ManualProject] = []
     @Published var selectedLogProjectID: UUID?
     @Published var lastError: String?
@@ -18,23 +20,43 @@ final class AppModel: ObservableObject {
     private let store = ProjectStore()
     private let processController = ProcessController()
     private let loginItemManager = LoginItemManager()
+    private let systemResourceMonitor = SystemResourceMonitor()
     private var refreshTimer: Timer?
+    private var resourceTimer: Timer?
 
     init() {
         projects = store.load()
         loginItemEnabled = loginItemManager.isEnabled
+        refreshSystemResources()
         refresh()
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 4, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
         }
+        resourceTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.refreshSystemResources() }
+        }
     }
 
     func refresh() {
-        processes = scanner.scan(manualProjects: projects, mode: processViewMode)
+        switch processViewMode {
+        case .activity:
+            activityProcesses = scanner.scanActivity()
+        case .dev, .all:
+            processes = scanner.scan(manualProjects: projects, mode: processViewMode)
+        }
+    }
+
+    func refreshSystemResources() {
+        systemResources = systemResourceMonitor.sample()
     }
 
     var unknownProcessCount: Int {
-        processes.filter { $0.kind == .unknown }.count
+        guard processViewMode != .activity else { return 0 }
+        return processes.filter { $0.kind == .unknown }.count
+    }
+
+    var displayedProcessCount: Int {
+        processViewMode == .activity ? activityProcesses.count : processes.count
     }
 
     func addProject(_ project: ManualProject) {
@@ -77,6 +99,22 @@ final class AppModel: ObservableObject {
     func stop(_ process: DevProcess) {
         processController.terminateTree(rootPID: process.pid)
         refresh()
+    }
+
+    func stop(_ process: ActivityProcess) {
+        guard
+            process.canStop,
+            let pid = process.primaryPID,
+            let identity = process.identity
+        else { return }
+
+        let controller = processController
+        Task { [weak self] in
+            _ = await Task.detached(priority: .userInitiated) {
+                controller.terminateValidatedTree(rootPID: pid, expectedIdentity: identity)
+            }.value
+            self?.refresh()
+        }
     }
 
     func restart(_ process: DevProcess) {

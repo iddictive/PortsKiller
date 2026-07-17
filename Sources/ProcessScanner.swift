@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 final class ProcessScanner {
@@ -34,11 +35,24 @@ final class ProcessScanner {
         "python", "uvicorn", "gunicorn", "ruby", "rails", "php", "java"
     ]
 
+    private let simulatorTokens = [
+        "coresimulator", "/developer/coreSimulator/", ".simruntime/", "launchd_sim",
+        "simdiskimaged", "simlaunchhost", "simulatortrampoline", "simrender",
+        "simmetal", "simaudio", "qemu-system", "android emulator", "-avd "
+    ].map { $0.lowercased() }
+
+    private let activityToolTokens = [
+        "node", "npm", "pnpm", "yarn", "bun", "tsx", "xcodebuild", "swift",
+        "docker", "orbstack", "colima", "playwright", "codex", "ollama"
+    ]
+
+    private let activityMinimumCPU = 3.0
+    private let activityMinimumMemory: UInt64 = 200 * 1_048_576
+
     func scan(manualProjects: [ManualProject], mode: ProcessViewMode = .dev) -> [DevProcess] {
         let listeners = listeningPorts()
         let processMap = processSnapshots()
-        let resourceMap = resourceSnapshots()
-        let childMap = resourceMap.values.reduce(into: [Int32: [Int32]]()) { partial, snapshot in
+        let childMap = processMap.values.reduce(into: [Int32: [Int32]]()) { partial, snapshot in
             partial[snapshot.parentPID, default: []].append(snapshot.pid)
         }
         var result: [DevProcess] = []
@@ -75,7 +89,7 @@ final class ProcessScanner {
                     cwd: cwd,
                     framework: frameworkName(from: combined, cwd: cwd, executable: snapshot.executable, listenerExecutable: listener.executable),
                     kind: kind,
-                    resources: aggregateResources(rootPID: listener.pid, resources: resourceMap, children: childMap),
+                    resources: aggregateResources(rootPID: listener.pid, snapshots: processMap, children: childMap),
                     projectID: matchedProject?.id
                 )
             )
@@ -88,6 +102,90 @@ final class ProcessScanner {
             if $0.name == $1.name { return $0.port < $1.port }
             return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
         }
+    }
+
+    func scanActivity(limit: Int = 18) -> [ActivityProcess] {
+        let snapshots = processSnapshots()
+        guard !snapshots.isEmpty, limit > 0 else { return [] }
+
+        let children = snapshots.values.reduce(into: [Int32: [Int32]]()) { partial, snapshot in
+            partial[snapshot.parentPID, default: []].append(snapshot.pid)
+        }
+        let simulatorPIDs = Set(snapshots.values.filter(isSimulatorProcess).map(\.pid))
+        let runtimeRoots = simulatorPIDs.compactMap { snapshots[$0] }.filter(isSimulatorRuntimeRoot)
+        var coveredSimulatorPIDs = Set<Int32>()
+        var simulatorEntries: [ActivityProcess] = []
+
+        for root in runtimeRoots {
+            let familyPIDs = descendantsIncludingRoot(root.pid, children: children)
+            coveredSimulatorPIDs.formUnion(familyPIDs)
+            let isAndroid = root.command.lowercased().contains("qemu-system")
+                || root.command.lowercased().contains("-avd ")
+            let identity = ProcessIdentityReader.read(pid: root.pid)
+            simulatorEntries.append(
+                ActivityProcess(
+                    id: "simulator:\(root.pid)",
+                    name: isAndroid ? "Android Emulator" : "iOS Simulator",
+                    detail: simulatorDetail(for: root, processCount: familyPIDs.count),
+                    command: root.command,
+                    kind: .simulator,
+                    resources: aggregateResources(rootPID: root.pid, snapshots: snapshots, children: children),
+                    processCount: familyPIDs.count,
+                    targetPIDs: [root.pid],
+                    identity: identity,
+                    canStop: identity?.ownerUID == UInt32(getuid())
+                )
+            )
+        }
+
+        let servicePIDs = simulatorPIDs.subtracting(coveredSimulatorPIDs)
+        if !servicePIDs.isEmpty {
+            simulatorEntries.append(
+                ActivityProcess(
+                    id: "simulator-services",
+                    name: "CoreSimulator services",
+                    detail: "\(servicePIDs.count) background processes",
+                    command: "CoreSimulator support services",
+                    kind: .simulator,
+                    resources: aggregateResources(pids: servicePIDs, snapshots: snapshots),
+                    processCount: servicePIDs.count,
+                    targetPIDs: [],
+                    identity: nil,
+                    canStop: false
+                )
+            )
+        }
+
+        let currentPID = Int32(ProcessInfo.processInfo.processIdentifier)
+        let heavyEntries = snapshots.values
+            .filter { snapshot in
+                snapshot.pid > 1
+                    && snapshot.pid != currentPID
+                    && !simulatorPIDs.contains(snapshot.pid)
+                    && (snapshot.resources.cpuPercent >= activityMinimumCPU
+                        || snapshot.resources.memoryBytes >= activityMinimumMemory)
+            }
+            .map { snapshot in
+                let kind = activityKind(for: snapshot)
+                return ActivityProcess(
+                    id: "process:\(snapshot.pid)",
+                    name: activityDisplayName(for: snapshot),
+                    detail: "PID \(snapshot.pid)",
+                    command: snapshot.command,
+                    kind: kind,
+                    resources: snapshot.resources,
+                    processCount: 1,
+                    targetPIDs: [snapshot.pid],
+                    identity: nil,
+                    canStop: false
+                )
+            }
+            .sorted(by: resourceSort)
+
+        let reservedSimulatorCount = min(simulatorEntries.count, min(6, limit))
+        let selected = Array(simulatorEntries.sorted(by: resourceSort).prefix(reservedSimulatorCount))
+            + Array(heavyEntries.prefix(limit - reservedSimulatorCount))
+        return selected.sorted(by: resourceSort)
     }
 
     private func listeningPorts() -> [ListeningPort] {
@@ -119,45 +217,35 @@ final class ProcessScanner {
         return ports
     }
 
-    private func processSnapshots() -> [Int32: ProcessInfoSnapshot] {
-        let result = Shell.run("/bin/ps", ["-axo", "pid=,ppid=,comm=,args="])
+    private func processSnapshots() -> [Int32: ProcessSnapshot] {
+        let result = Shell.run("/bin/ps", ["-ww", "-axo", "pid=,ppid=,uid=,%cpu=,rss=,etime=,args="])
         guard result.status == 0 else { return [:] }
 
-        var snapshots: [Int32: ProcessInfoSnapshot] = [:]
+        var snapshots: [Int32: ProcessSnapshot] = [:]
         for line in result.output.split(separator: "\n", omittingEmptySubsequences: true).map(String.init) {
-            let parts = line.split(maxSplits: 3, whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
-            guard parts.count >= 4, let pid = Int32(parts[0]), let ppid = Int32(parts[1]) else { continue }
-            snapshots[pid] = ProcessInfoSnapshot(
-                pid: pid,
-                parentPID: ppid,
-                executable: parts[2],
-                command: parts[3]
-            )
-        }
-        return snapshots
-    }
-
-    private func resourceSnapshots() -> [Int32: ProcessResourceSnapshot] {
-        let result = Shell.run("/bin/ps", ["-axo", "pid=,ppid=,%cpu=,rss=,etime="])
-        guard result.status == 0 else { return [:] }
-
-        var snapshots: [Int32: ProcessResourceSnapshot] = [:]
-        for line in result.output.split(separator: "\n", omittingEmptySubsequences: true).map(String.init) {
-            let parts = line.split(maxSplits: 4, whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
+            let parts = line.split(maxSplits: 6, whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
             guard
-                parts.count == 5,
+                parts.count == 7,
                 let pid = Int32(parts[0]),
                 let ppid = Int32(parts[1]),
-                let cpu = Double(parts[2]),
-                let rssKilobytes = UInt64(parts[3])
+                let ownerUID = UInt32(parts[2]),
+                let cpu = Double(parts[3]),
+                let rssKilobytes = UInt64(parts[4])
             else { continue }
 
-            snapshots[pid] = ProcessResourceSnapshot(
+            let command = parts[6]
+            let executable = command.split(whereSeparator: { $0 == " " || $0 == "\t" }).first.map(String.init) ?? command
+            snapshots[pid] = ProcessSnapshot(
                 pid: pid,
                 parentPID: ppid,
-                cpuPercent: cpu,
-                residentBytes: rssKilobytes * 1024,
-                elapsedTime: parts[4]
+                ownerUID: ownerUID,
+                executable: executable,
+                command: command,
+                resources: ResourceUsage(
+                    cpuPercent: cpu,
+                    memoryBytes: rssKilobytes * 1024,
+                    uptime: parts[5]
+                )
             )
         }
         return snapshots
@@ -175,10 +263,10 @@ final class ProcessScanner {
 
     private func aggregateResources(
         rootPID: Int32,
-        resources: [Int32: ProcessResourceSnapshot],
+        snapshots: [Int32: ProcessSnapshot],
         children: [Int32: [Int32]]
     ) -> ResourceUsage {
-        guard let root = resources[rootPID] else { return .empty }
+        guard let root = snapshots[rootPID] else { return .empty }
 
         var stack = [rootPID]
         var visited = Set<Int32>()
@@ -187,14 +275,97 @@ final class ProcessScanner {
 
         while let pid = stack.popLast() {
             guard visited.insert(pid).inserted else { continue }
-            if let snapshot = resources[pid] {
-                cpu += snapshot.cpuPercent
-                memory += snapshot.residentBytes
+            if let snapshot = snapshots[pid] {
+                cpu += snapshot.resources.cpuPercent
+                memory += snapshot.resources.memoryBytes
             }
             stack.append(contentsOf: children[pid] ?? [])
         }
 
-        return ResourceUsage(cpuPercent: cpu, memoryBytes: memory, uptime: root.elapsedTime)
+        return ResourceUsage(cpuPercent: cpu, memoryBytes: memory, uptime: root.resources.uptime)
+    }
+
+    private func aggregateResources(
+        pids: Set<Int32>,
+        snapshots: [Int32: ProcessSnapshot]
+    ) -> ResourceUsage {
+        let values = pids.compactMap { snapshots[$0]?.resources }
+        guard let first = values.first else { return .empty }
+        return ResourceUsage(
+            cpuPercent: values.reduce(0) { $0 + $1.cpuPercent },
+            memoryBytes: values.reduce(0) { $0 + $1.memoryBytes },
+            uptime: first.uptime
+        )
+    }
+
+    private func descendantsIncludingRoot(
+        _ rootPID: Int32,
+        children: [Int32: [Int32]]
+    ) -> Set<Int32> {
+        var stack = [rootPID]
+        var result = Set<Int32>()
+        while let pid = stack.popLast() {
+            guard result.insert(pid).inserted else { continue }
+            stack.append(contentsOf: children[pid] ?? [])
+        }
+        return result
+    }
+
+    private func isSimulatorProcess(_ snapshot: ProcessSnapshot) -> Bool {
+        let value = snapshot.command.lowercased()
+        return simulatorTokens.contains { value.contains($0) }
+    }
+
+    private func isSimulatorRuntimeRoot(_ snapshot: ProcessSnapshot) -> Bool {
+        let value = snapshot.command.lowercased()
+        return value.hasPrefix("launchd_sim ")
+            || value.contains("qemu-system")
+            || value.contains(" -avd ")
+    }
+
+    private func simulatorDetail(for snapshot: ProcessSnapshot, processCount: Int) -> String {
+        let command = snapshot.command
+        if let devicesRange = command.range(of: "/Devices/", options: .caseInsensitive) {
+            let suffix = command[devicesRange.upperBound...]
+            let deviceID = suffix.split(separator: "/").first.map(String.init) ?? ""
+            if !deviceID.isEmpty {
+                return "Device \(deviceID.prefix(8)) · \(processCount) processes"
+            }
+        }
+        return "\(processCount) processes"
+    }
+
+    private func activityKind(for snapshot: ProcessSnapshot) -> ActivityProcessKind {
+        let value = snapshot.command.lowercased()
+        if snapshot.ownerUID == 0 || value.hasPrefix("/system/") || value.contains("/usr/libexec/") {
+            return .system
+        }
+        if value.contains(".app/contents/") { return .application }
+        if activityToolTokens.contains(where: { value.contains($0) }) { return .developerTool }
+        return .other
+    }
+
+    private func activityDisplayName(for snapshot: ProcessSnapshot) -> String {
+        if let appRange = snapshot.command.range(of: ".app/", options: [.caseInsensitive, .backwards]) {
+            let appPath = snapshot.command[..<appRange.lowerBound]
+            if let component = appPath.split(separator: "/").last, !component.isEmpty {
+                return String(component)
+            }
+        }
+
+        let executableName = URL(fileURLWithPath: snapshot.executable).lastPathComponent
+        if !executableName.isEmpty && executableName != "/" { return executableName }
+        return "PID \(snapshot.pid)"
+    }
+
+    private func resourceSort(_ lhs: ActivityProcess, _ rhs: ActivityProcess) -> Bool {
+        if lhs.resources.memoryBytes != rhs.resources.memoryBytes {
+            return lhs.resources.memoryBytes > rhs.resources.memoryBytes
+        }
+        if lhs.resources.cpuPercent != rhs.resources.cpuPercent {
+            return lhs.resources.cpuPercent > rhs.resources.cpuPercent
+        }
+        return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
     }
 
     private func isLikelyDevProcess(combined: String, cwd: String?) -> Bool {

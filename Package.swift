@@ -14,6 +14,11 @@ let package = Package(
         .executableTarget(
             name: "PortsKiller",
             path: "Sources"
+        ),
+        .testTarget(
+            name: "PortsKillerTests",
+            dependencies: ["PortsKiller"],
+            path: "Tests"
         )
     ]
 )
