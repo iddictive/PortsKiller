@@ -15,13 +15,14 @@ struct DevProcess: Identifiable, Hashable, Sendable {
     let kind: ProcessKind
     let resources: ResourceUsage
     let projectID: UUID?
+    let inferredRestartCommand: String?
 
     var urlString: String {
         "http://localhost:\(port)"
     }
 
     var canRestart: Bool {
-        projectID != nil || inferredRestartProject != nil
+        projectID != nil || inferredRestartCommand != nil
     }
 
     var canStop: Bool {
@@ -29,8 +30,7 @@ struct DevProcess: Identifiable, Hashable, Sendable {
     }
 
     var inferredRestartProject: ManualProject? {
-        guard projectID == nil, kind == .dev, let cwd else { return nil }
-        guard let command = PackageScriptInspector().restartCommand(cwd: cwd, port: port) else { return nil }
+        guard projectID == nil, let cwd, let command = inferredRestartCommand else { return nil }
         return ManualProject(name: name, cwd: cwd, command: command, port: port)
     }
 }

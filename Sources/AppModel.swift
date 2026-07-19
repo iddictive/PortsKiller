@@ -74,7 +74,7 @@ final class AppModel: ObservableObject {
         let capturedProjects = projects
 
         refreshTask = Task { [weak self] in
-            let result = await Task.detached(priority: .userInitiated) {
+            let result = await Task.detached(priority: .utility) {
                 let scanner = ProcessScanner()
                 return switch mode {
                 case .activity:
@@ -92,9 +92,13 @@ final class AppModel: ObservableObject {
                capturedProjects == self.projects {
                 switch result {
                 case let .listeners(processes):
-                    self.processes = processes
+                    if self.processes != processes {
+                        self.processes = processes
+                    }
                 case let .activity(processes):
-                    self.activityProcesses = processes
+                    if self.activityProcesses != processes {
+                        self.activityProcesses = processes
+                    }
                 }
             }
 

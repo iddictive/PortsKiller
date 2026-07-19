@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import XCTest
 @testable import PortsKiller
@@ -38,7 +39,7 @@ final class SessionRecoveryTests: XCTestCase {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("PortsKillerRecoveryTests-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        let sessions = root.appendingPathComponent("sessions/2026/07/19", isDirectory: true)
+        let sessions = sessionDirectory(in: root)
         let state = root.appendingPathComponent("state", isDirectory: true)
         try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
         let sessionID = "00000000-0000-4000-8000-000000000001"
@@ -70,7 +71,7 @@ final class SessionRecoveryTests: XCTestCase {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("PortsKillerRecoveryNoopTests-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        let sessions = root.appendingPathComponent("sessions/2026/07/19", isDirectory: true)
+        let sessions = sessionDirectory(in: root)
         let stateDirectory = root.appendingPathComponent("state", isDirectory: true)
         try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
         let file = sessions.appendingPathComponent("rollout-00000000-0000-4000-8000-000000000001.jsonl")
@@ -92,6 +93,43 @@ final class SessionRecoveryTests: XCTestCase {
         await service.stop()
     }
 
+    @MainActor
+    func testOffsetOnlyScanDoesNotRepublishSnapshotOrImmediatelyRewriteState() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PortsKillerRecoveryOffsetTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessions = sessionDirectory(in: root)
+        let stateDirectory = root.appendingPathComponent("state", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+        let file = sessions.appendingPathComponent("rollout-00000000-0000-4000-8000-000000000001.jsonl")
+        try writeLine([
+            "timestamp": "2026-07-19T08:00:00.000Z",
+            "type": "session_meta",
+            "payload": ["cwd": root.path]
+        ], to: file, append: false)
+
+        let service = SessionRecoveryService(codexHome: root, stateDirectory: stateDirectory)
+        await service.start()
+        for _ in 0..<20 where !service.snapshot.isRunning {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+
+        var snapshotEmissions = 0
+        let observation = service.$snapshot.dropFirst().sink { _ in snapshotEmissions += 1 }
+        let stateURL = stateDirectory.appendingPathComponent("state.json")
+        let before = try FileManager.default.attributesOfItem(atPath: stateURL.path)[.systemFileNumber] as? NSNumber
+
+        try writeLine(taskError(code: "invalid_request", message: "Malformed input"), to: file)
+        await service.scanNow()
+        await Task.yield()
+
+        let after = try FileManager.default.attributesOfItem(atPath: stateURL.path)[.systemFileNumber] as? NSNumber
+        XCTAssertEqual(after, before)
+        XCTAssertEqual(snapshotEmissions, 0)
+        observation.cancel()
+        await service.stop()
+    }
+
     private func taskError(code: String, message: String) -> [String: Any] {
         [
             "timestamp": ISO8601DateFormatter().string(from: Date()),
@@ -102,6 +140,17 @@ final class SessionRecoveryTests: XCTestCase {
                 "error": ["message": message, "codex_error_info": code]
             ]
         ]
+    }
+
+    private func sessionDirectory(in root: URL, date: Date = Date()) -> URL {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        let parts = calendar.dateComponents([.year, .month, .day], from: date)
+        return root
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent(String(format: "%04d", parts.year!), isDirectory: true)
+            .appendingPathComponent(String(format: "%02d", parts.month!), isDirectory: true)
+            .appendingPathComponent(String(format: "%02d", parts.day!), isDirectory: true)
     }
 
     private func writeLine(_ value: [String: Any], to file: URL, append: Bool = true) throws {

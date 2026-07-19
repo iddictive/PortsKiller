@@ -48,10 +48,12 @@ final class ProcessScanner {
 
     private let activityMinimumCPU = 3.0
     private let activityMinimumMemory: UInt64 = 200 * 1_048_576
+    private let packageScriptInspector = PackageScriptInspector()
 
     func scan(manualProjects: [ManualProject], mode: ProcessViewMode = .dev) -> [DevProcess] {
         let listeners = listeningPorts()
         let processMap = processSnapshots()
+        let cwdByPID = workingDirectories(for: Set(listeners.map(\.pid)))
         let childMap = processMap.values.reduce(into: [Int32: [Int32]]()) { partial, snapshot in
             partial[snapshot.parentPID, default: []].append(snapshot.pid)
         }
@@ -63,7 +65,7 @@ final class ProcessScanner {
             guard seenListeners.insert("\(listener.pid):\(listener.port)").inserted else { continue }
             let initialCombined = "\(listener.executable) \(snapshot.executable) \(snapshot.command)"
 
-            let cwd = cwd(for: listener.pid)
+            let cwd = cwdByPID[listener.pid]
             let combined = "\(snapshot.executable) \(snapshot.command) \(cwd ?? "")"
             let kind = classify(combined: "\(initialCombined) \(combined)", cwd: cwd)
 
@@ -77,6 +79,9 @@ final class ProcessScanner {
                 ?? mcpDisplayName(from: "\(initialCombined) \(combined)")
                 ?? packageName(in: cwd)
                 ?? displayName(cwd: cwd, executable: snapshot.executable, listenerExecutable: listener.executable)
+            let inferredRestartCommand = matchedProject == nil && kind == .dev
+                ? cwd.flatMap { packageScriptInspector.restartCommand(cwd: $0, port: listener.port) }
+                : nil
 
             result.append(
                 DevProcess(
@@ -91,7 +96,8 @@ final class ProcessScanner {
                     framework: frameworkName(from: combined, cwd: cwd, executable: snapshot.executable, listenerExecutable: listener.executable),
                     kind: kind,
                     resources: aggregateResources(rootPID: listener.pid, snapshots: processMap, children: childMap),
-                    projectID: matchedProject?.id
+                    projectID: matchedProject?.id,
+                    inferredRestartCommand: inferredRestartCommand
                 )
             )
         }
@@ -252,14 +258,22 @@ final class ProcessScanner {
         return snapshots
     }
 
-    private func cwd(for pid: Int32) -> String? {
-        let result = Shell.run("/usr/sbin/lsof", ["-a", "-p", "\(pid)", "-d", "cwd", "-Fn"])
-        guard result.status == 0 else { return nil }
-        return result.output
-            .split(separator: "\n", omittingEmptySubsequences: true)
-            .map(String.init)
-            .first(where: { $0.hasPrefix("n") })
-            .map { String($0.dropFirst()) }
+    private func workingDirectories(for pids: Set<Int32>) -> [Int32: String] {
+        guard !pids.isEmpty else { return [:] }
+        let pidList = pids.sorted().map(String.init).joined(separator: ",")
+        let result = Shell.run("/usr/sbin/lsof", ["-a", "-p", pidList, "-d", "cwd", "-Fpn"])
+        guard !result.output.isEmpty else { return [:] }
+
+        var currentPID: Int32?
+        var directories: [Int32: String] = [:]
+        for line in result.output.split(separator: "\n", omittingEmptySubsequences: true) {
+            if line.hasPrefix("p") {
+                currentPID = Int32(line.dropFirst())
+            } else if line.hasPrefix("n"), let currentPID {
+                directories[currentPID] = String(line.dropFirst())
+            }
+        }
+        return directories
     }
 
     private func aggregateResources(

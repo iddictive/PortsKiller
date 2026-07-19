@@ -121,12 +121,15 @@ final class SessionRecoveryService: ObservableObject, @unchecked Sendable {
     private let stateURL: URL
     private let workerQueue = DispatchQueue(label: "com.md.PortsKiller.session-recovery", qos: .utility)
     private var state: SessionRecoveryState
+    private var lastSweepDate: Date
     private var isRunning = false
     private var issue: String?
+    private var lastPublishedSnapshot = SessionRecoverySnapshot()
     private var eventStream: FSEventStreamRef?
     private var dueTimer: DispatchSourceTimer?
     private var fallbackTimer: DispatchSourceTimer?
     private var scanWorkItem: DispatchWorkItem?
+    private var stateSaveWorkItem: DispatchWorkItem?
     private var runningProcesses: [String: Process] = [:]
 
     init(
@@ -143,6 +146,8 @@ final class SessionRecoveryService: ObservableObject, @unchecked Sendable {
             .appendingPathComponent("session-recovery", isDirectory: true)
         stateURL = self.stateDirectory.appendingPathComponent("state.json")
         state = Self.loadState(from: stateURL) ?? SessionRecoveryState()
+        lastSweepDate = (try? stateURL.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+            ?? Date()
     }
 
     func start() async {
@@ -155,10 +160,11 @@ final class SessionRecoveryService: ObservableObject, @unchecked Sendable {
             try fileManager.createDirectory(at: stateDirectory, withIntermediateDirectories: true)
             try? fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: stateDirectory.path)
             if state.files.isEmpty {
-                baselineExistingFiles()
+                baselineRecentFiles()
             } else {
-                scanAllFiles()
+                _ = scanRecentFiles(modifiedAfter: lastSweepDate.addingTimeInterval(-5))
             }
+            lastSweepDate = Date()
             reconcileInterruptedRecoveries()
             startEventStream()
             startTimers()
@@ -191,6 +197,9 @@ final class SessionRecoveryService: ObservableObject, @unchecked Sendable {
         fallbackTimer = nil
         scanWorkItem?.cancel()
         scanWorkItem = nil
+        if stateSaveWorkItem != nil {
+            saveState()
+        }
         if let eventStream {
             FSEventStreamStop(eventStream)
             FSEventStreamInvalidate(eventStream)
@@ -222,7 +231,7 @@ final class SessionRecoveryService: ObservableObject, @unchecked Sendable {
 
         let fallbackTimer = DispatchSource.makeTimerSource(queue: workerQueue)
         fallbackTimer.schedule(deadline: .now() + 300, repeating: 300)
-        fallbackTimer.setEventHandler { [weak self] in _ = self?.scanAllFiles() }
+        fallbackTimer.setEventHandler { [weak self] in self?.reconcileRecentFiles() }
         fallbackTimer.resume()
         self.fallbackTimer = fallbackTimer
     }
@@ -276,9 +285,17 @@ final class SessionRecoveryService: ObservableObject, @unchecked Sendable {
 
     private func scheduleScan(paths: [String]) {
         var jsonlPaths = Set(paths.filter { $0.hasSuffix(".jsonl") })
-        if paths.contains(where: { !$0.hasSuffix(".jsonl") }) {
-            let recentCutoff = Date().addingTimeInterval(-120)
-            jsonlPaths.formUnion(listSessionFiles(modifiedAfter: recentCutoff).map(\.path))
+        let recentCutoff = Date().addingTimeInterval(-120)
+        for path in paths where !path.hasSuffix(".jsonl") {
+            let eventURL = URL(fileURLWithPath: path, isDirectory: true)
+            if eventURL.standardizedFileURL.path == sessionsRoot.standardizedFileURL.path {
+                jsonlPaths.formUnion(listRecentSessionFiles(modifiedAfter: recentCutoff).map(\.path))
+                continue
+            }
+            var isDirectory: ObjCBool = false
+            if fileManager.fileExists(atPath: eventURL.path, isDirectory: &isDirectory), isDirectory.boolValue {
+                jsonlPaths.formUnion(listSessionFiles(at: eventURL, modifiedAfter: recentCutoff).map(\.path))
+            }
         }
         guard !jsonlPaths.isEmpty else { return }
         scanWorkItem?.cancel()
@@ -289,7 +306,7 @@ final class SessionRecoveryService: ObservableObject, @unchecked Sendable {
                 changed = self.scanFile(URL(fileURLWithPath: path)) || changed
             }
             if changed {
-                self.saveState()
+                self.scheduleStateSave()
                 self.publishSnapshot()
             }
         }
@@ -297,29 +314,64 @@ final class SessionRecoveryService: ObservableObject, @unchecked Sendable {
         workerQueue.asyncAfter(deadline: .now() + 0.25, execute: work)
     }
 
-    private func baselineExistingFiles() {
-        for file in listSessionFiles() {
+    private func baselineRecentFiles() {
+        for file in listRecentSessionFiles(modifiedAfter: nil) {
             state.files[file.path] = fileSize(file)
         }
     }
 
     @discardableResult
     private func scanAllFiles() -> Bool {
+        scanFiles(listSessionFiles())
+    }
+
+    @discardableResult
+    private func scanRecentFiles(modifiedAfter cutoff: Date?) -> Bool {
+        scanFiles(listRecentSessionFiles(modifiedAfter: cutoff))
+    }
+
+    @discardableResult
+    private func scanFiles(_ files: [URL]) -> Bool {
         var changed = false
-        for file in listSessionFiles() {
+        for file in files {
             guard state.files[file.path] != fileSize(file) else { continue }
             changed = scanFile(file) || changed
         }
         if changed {
-            saveState()
+            scheduleStateSave()
             publishSnapshot()
         }
         return changed
     }
 
-    private func listSessionFiles(modifiedAfter cutoff: Date? = nil) -> [URL] {
+    private func reconcileRecentFiles() {
+        let cutoff = lastSweepDate.addingTimeInterval(-5)
+        lastSweepDate = Date()
+        _ = scanRecentFiles(modifiedAfter: cutoff)
+    }
+
+    private func listRecentSessionFiles(modifiedAfter cutoff: Date?) -> [URL] {
+        recentSessionRoots().flatMap { listSessionFiles(at: $0, modifiedAfter: cutoff) }
+    }
+
+    private func recentSessionRoots(now: Date = Date()) -> [URL] {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        return (0..<3).compactMap { dayOffset -> URL? in
+            guard let date = calendar.date(byAdding: .day, value: -dayOffset, to: now) else { return nil }
+            let parts = calendar.dateComponents([.year, .month, .day], from: date)
+            guard let year = parts.year, let month = parts.month, let day = parts.day else { return nil }
+            return sessionsRoot
+                .appendingPathComponent(String(format: "%04d", year), isDirectory: true)
+                .appendingPathComponent(String(format: "%02d", month), isDirectory: true)
+                .appendingPathComponent(String(format: "%02d", day), isDirectory: true)
+        }
+    }
+
+    private func listSessionFiles(at root: URL? = nil, modifiedAfter cutoff: Date? = nil) -> [URL] {
+        let root = root ?? sessionsRoot
         guard let enumerator = fileManager.enumerator(
-            at: sessionsRoot,
+            at: root,
             includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey],
             options: [.skipsHiddenFiles]
         ) else { return [] }
@@ -588,12 +640,25 @@ final class SessionRecoveryService: ObservableObject, @unchecked Sendable {
             recentEvents: state.recentEvents,
             issue: issue
         )
+        guard snapshot != lastPublishedSnapshot else { return }
+        lastPublishedSnapshot = snapshot
         Task { @MainActor [weak self] in
             self?.snapshot = snapshot
         }
     }
 
+    private func scheduleStateSave() {
+        stateSaveWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.saveState()
+        }
+        stateSaveWorkItem = work
+        workerQueue.asyncAfter(deadline: .now() + 2, execute: work)
+    }
+
     private func saveState() {
+        stateSaveWorkItem?.cancel()
+        stateSaveWorkItem = nil
         do {
             try fileManager.createDirectory(at: stateDirectory, withIntermediateDirectories: true)
             let data = try JSONEncoder.sessionRecovery.encode(state)
