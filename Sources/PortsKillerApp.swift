@@ -34,7 +34,18 @@ enum PortsKillerMain {
             let cpu = resources.cpuPercent.map { String(format: "%.1f%%", $0) } ?? "-"
             let used = ByteCountFormatter.string(fromByteCount: Int64(clamping: resources.memoryUsedBytes), countStyle: .memory)
             let total = ByteCountFormatter.string(fromByteCount: Int64(clamping: resources.memoryTotalBytes), countStyle: .memory)
-            print("cpu=\(cpu)\tram=\(used)/\(total)\tram_percent=\(String(format: "%.1f%%", resources.memoryPercent))")
+            let swap = resources.swap.map {
+                let swapUsed = ByteCountFormatter.string(fromByteCount: Int64(clamping: $0.usedBytes), countStyle: .memory)
+                let swapTotal = ByteCountFormatter.string(fromByteCount: Int64(clamping: $0.totalBytes), countStyle: .memory)
+                return "\(swapUsed)/\(swapTotal)"
+            } ?? "unavailable"
+            print("cpu=\(cpu)\tram=\(used)/\(total)\tram_percent=\(String(format: "%.1f%%", resources.memoryPercent))\tswap=\(swap)")
+            exit(0)
+        }
+
+        if CommandLine.arguments.contains("--recovery-status") {
+            let snapshot = SessionRecoveryService.persistedSnapshot()
+            print("active=\(snapshot.activeCount)\tpending=\(snapshot.pendingCount)\tevents=\(snapshot.recentEvents.count)")
             exit(0)
         }
 
@@ -53,7 +64,8 @@ struct PortsKillerApp: App {
             MenuBarIcon(
                 resources: model.systemResources,
                 metric: model.menuBarMetric,
-                hasWarning: model.unknownProcessCount > 0
+                hasWarning: model.unknownProcessCount > 0,
+                recovery: model.sessionRecoverySnapshot
             )
         }
         .menuBarExtraStyle(.window)
@@ -75,26 +87,46 @@ private struct MenuBarIcon: View {
     let resources: SystemResourceUsage
     let metric: MenuBarMetric
     let hasWarning: Bool
+    let recovery: SessionRecoverySnapshot
 
     var body: some View {
-        HStack(spacing: 5) {
+        HStack(alignment: .center, spacing: 5) {
             Image(systemName: "terminal")
                 .font(.system(size: 13, weight: .semibold))
 
-            if let metricLabel = presentation.metricLabel {
-                Text(metricLabel)
-            }
-
-            if hasWarning {
-                Circle()
-                    .fill(.red)
-                    .frame(width: 6, height: 6)
-            }
+            statusText
         }
         .font(.system(size: 9, weight: .semibold, design: .monospaced))
         .monospacedDigit()
         .fixedSize()
-        .accessibilityLabel(presentation.accessibilityLabel(hasWarning: hasWarning))
+        .help(statusHelp)
+        .accessibilityLabel("\(presentation.accessibilityLabel(hasWarning: hasWarning)), \(recovery.statusText)")
+    }
+
+    private var statusText: Text {
+        switch presentation.content(isRecovering: recovery.isRecovering) {
+        case .recovering:
+            return appendingWarning(
+                to: Text("⟳")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(.primary)
+            )
+        case let .metric(metricLabel, showsSwapIndicator):
+            var label = Text(metricLabel ?? "")
+            if showsSwapIndicator {
+                label = label + Text(" ●")
+                    .font(.system(size: 6, weight: .regular))
+                    .foregroundColor(.primary)
+            }
+            return appendingWarning(to: label)
+        }
+    }
+
+    private func appendingWarning(to label: Text) -> Text {
+        guard hasWarning else { return label }
+        return label + Text(" ●")
+            .font(.system(size: 7, weight: .bold))
+            .foregroundColor(.red)
     }
 
     private var presentation: MenuBarStatusPresentation {
@@ -103,4 +135,20 @@ private struct MenuBarIcon: View {
             metric: metric
         )
     }
+
+    private var swapHelp: String {
+        guard let swap = resources.swap else { return "Swap unavailable" }
+        let used = ByteCountFormatter.string(
+            fromByteCount: Int64(clamping: swap.usedBytes),
+            countStyle: .memory
+        )
+        return "Swap in use: \(used)"
+    }
+
+    private var statusHelp: String {
+        presentation.showsSwapIndicator
+            ? "\(swapHelp) · \(recovery.statusText)"
+            : recovery.statusText
+    }
+
 }

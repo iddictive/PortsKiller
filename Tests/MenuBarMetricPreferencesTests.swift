@@ -56,24 +56,61 @@ final class MenuBarMetricPreferencesTests: XCTestCase {
         let resources = SystemResourceUsage(
             cpuPercent: 42.4,
             memoryUsedBytes: 30,
-            memoryTotalBytes: 100
+            memoryTotalBytes: 100,
+            swap: SwapUsage(usedBytes: 1_073_741_824, totalBytes: 3_221_225_472)
         )
 
         XCTAssertEqual(
             MenuBarStatusPresentation(resources: resources, metric: .cpu).metricLabel,
-            "CPU 42%"
+            "42%"
         )
         XCTAssertEqual(
             MenuBarStatusPresentation(resources: resources, metric: .ram).metricLabel,
-            "RAM 30%"
+            "30%"
+        )
+        XCTAssertTrue(MenuBarStatusPresentation(resources: resources, metric: .cpu).showsSwapIndicator)
+        XCTAssertTrue(MenuBarStatusPresentation(resources: resources, metric: .ram).showsSwapIndicator)
+
+        XCTAssertEqual(
+            MenuBarStatusPresentation(resources: resources, metric: .ram).content(isRecovering: false),
+            .metric(label: "30%", showsSwapIndicator: true)
+        )
+        XCTAssertEqual(
+            MenuBarStatusPresentation(resources: resources, metric: .ram).content(isRecovering: true),
+            .recovering
         )
 
         let iconOnly = MenuBarStatusPresentation(resources: resources, metric: .iconOnly)
         XCTAssertNil(iconOnly.metricLabel)
+        XCTAssertFalse(iconOnly.showsSwapIndicator)
         XCTAssertEqual(iconOnly.accessibilityLabel(hasWarning: false), "PortsKiller")
         XCTAssertEqual(
             iconOnly.accessibilityLabel(hasWarning: true),
             "PortsKiller, unknown listener detected"
+        )
+    }
+
+    func testSwapIndicatorDistinguishesInactiveUnavailableAndActiveSwap() {
+        let inactive = SystemResourceUsage(
+            cpuPercent: 10,
+            memoryUsedBytes: 40,
+            memoryTotalBytes: 100,
+            swap: SwapUsage(usedBytes: 0, totalBytes: 0)
+        )
+        let unavailable = SystemResourceUsage(
+            cpuPercent: 10,
+            memoryUsedBytes: 40,
+            memoryTotalBytes: 100,
+            swap: nil
+        )
+
+        XCTAssertEqual(MenuBarStatusPresentation(resources: inactive, metric: .ram).metricLabel, "40%")
+        XCTAssertEqual(MenuBarStatusPresentation(resources: unavailable, metric: .ram).metricLabel, "40%")
+        XCTAssertFalse(MenuBarStatusPresentation(resources: inactive, metric: .ram).showsSwapIndicator)
+        XCTAssertFalse(MenuBarStatusPresentation(resources: unavailable, metric: .ram).showsSwapIndicator)
+        XCTAssertEqual(
+            MenuBarStatusPresentation(resources: inactive, metric: .ram).accessibilityLabel(hasWarning: false),
+            "PortsKiller, RAM 40 percent"
         )
     }
 }

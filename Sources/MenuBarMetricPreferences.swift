@@ -23,25 +23,54 @@ struct MenuBarStatusPresentation {
     var metricLabel: String? {
         switch metric {
         case .cpu:
-            guard let cpu = resources.cpuPercent else { return "CPU --" }
-            return String(format: "CPU %.0f%%", cpu)
+            guard let cpu = resources.cpuPercent else { return "--" }
+            return String(format: "%.0f%%", cpu)
         case .ram:
-            return String(format: "RAM %.0f%%", resources.memoryPercent)
+            return String(format: "%.0f%%", resources.memoryPercent)
         case .iconOnly:
             return nil
         }
     }
 
+    var showsSwapIndicator: Bool {
+        metric != .iconOnly && resources.swap?.isActive == true
+    }
+
+    func content(isRecovering: Bool) -> MenuBarStatusContent {
+        if isRecovering {
+            return .recovering
+        }
+        return .metric(label: metricLabel, showsSwapIndicator: showsSwapIndicator)
+    }
+
     func accessibilityLabel(hasWarning: Bool) -> String {
         var parts = ["PortsKiller"]
-        if let metricLabel {
-            parts.append(metricLabel)
+        switch metric {
+        case .cpu:
+            let value = resources.cpuPercent.map { String(format: "%.0f percent", $0) } ?? "unavailable"
+            parts.append("CPU \(value)")
+        case .ram:
+            parts.append(String(format: "RAM %.0f percent", resources.memoryPercent))
+        case .iconOnly:
+            break
+        }
+        if metric != .iconOnly, let swap = resources.swap, swap.isActive {
+            let used = ByteCountFormatter.string(
+                fromByteCount: Int64(clamping: swap.usedBytes),
+                countStyle: .memory
+            )
+            parts.append("swap \(used) in use")
         }
         if hasWarning {
             parts.append("unknown listener detected")
         }
         return parts.joined(separator: ", ")
     }
+}
+
+enum MenuBarStatusContent: Equatable {
+    case metric(label: String?, showsSwapIndicator: Bool)
+    case recovering
 }
 
 final class MenuBarMetricPreferences {

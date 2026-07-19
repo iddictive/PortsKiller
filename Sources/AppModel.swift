@@ -1,8 +1,14 @@
 import AppKit
+import Combine
 import Foundation
 
 @MainActor
 final class AppModel: ObservableObject {
+    private enum ScanResult: Sendable {
+        case listeners([DevProcess])
+        case activity([ActivityProcess])
+    }
+
     @Published var processes: [DevProcess] = []
     @Published var activityProcesses: [ActivityProcess] = []
     @Published var systemResources: SystemResourceUsage = .unavailable
@@ -10,6 +16,7 @@ final class AppModel: ObservableObject {
     @Published var selectedLogProjectID: UUID?
     @Published var lastError: String?
     @Published var loginItemEnabled: Bool = false
+    @Published private(set) var sessionRecoverySnapshot = SessionRecoverySnapshot()
     @Published var menuBarMetric: MenuBarMetric = .cpu {
         didSet { menuBarMetricPreferences.save(menuBarMetric) }
     }
@@ -18,8 +25,8 @@ final class AppModel: ObservableObject {
     }
 
     let runner = ManagedProcessRunner()
+    let sessionRecovery = SessionRecoveryService()
 
-    private let scanner = ProcessScanner()
     private let store = ProjectStore()
     private let processController = ProcessController()
     private let loginItemManager = LoginItemManager()
@@ -27,11 +34,20 @@ final class AppModel: ObservableObject {
     private let menuBarMetricPreferences = MenuBarMetricPreferences()
     private var refreshTimer: Timer?
     private var resourceTimer: Timer?
+    private var refreshTask: Task<Void, Never>?
+    private var refreshGeneration = 0
+    private var refreshPending = false
+    private var cancellables: Set<AnyCancellable> = []
 
     init() {
         menuBarMetric = menuBarMetricPreferences.load()
         projects = store.load()
         loginItemEnabled = loginItemManager.isEnabled
+        sessionRecovery.$snapshot
+            .receive(on: RunLoop.main)
+            .sink { [weak self] snapshot in self?.sessionRecoverySnapshot = snapshot }
+            .store(in: &cancellables)
+        Task { await sessionRecovery.start() }
         refreshSystemResources()
         refresh()
         GitHubUpdater.shared.checkForUpdates()
@@ -44,11 +60,49 @@ final class AppModel: ObservableObject {
     }
 
     func refresh() {
-        switch processViewMode {
-        case .activity:
-            activityProcesses = scanner.scanActivity()
-        case .dev, .all:
-            processes = scanner.scan(manualProjects: projects, mode: processViewMode)
+        guard refreshTask == nil else {
+            refreshPending = true
+            return
+        }
+        refreshGeneration &+= 1
+        startRefresh()
+    }
+
+    private func startRefresh() {
+        let generation = refreshGeneration
+        let mode = processViewMode
+        let capturedProjects = projects
+
+        refreshTask = Task { [weak self] in
+            let result = await Task.detached(priority: .userInitiated) {
+                let scanner = ProcessScanner()
+                return switch mode {
+                case .activity:
+                    ScanResult.activity(scanner.scanActivity())
+                case .dev, .all:
+                    ScanResult.listeners(scanner.scan(manualProjects: capturedProjects, mode: mode))
+                }
+            }.value
+
+            guard let self else { return }
+            self.refreshTask = nil
+
+            if generation == self.refreshGeneration,
+               mode == self.processViewMode,
+               capturedProjects == self.projects {
+                switch result {
+                case let .listeners(processes):
+                    self.processes = processes
+                case let .activity(processes):
+                    self.activityProcesses = processes
+                }
+            }
+
+            if self.refreshPending {
+                self.refreshPending = false
+                self.refreshGeneration &+= 1
+                self.startRefresh()
+            }
         }
     }
 

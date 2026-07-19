@@ -1,6 +1,6 @@
 import Foundation
 
-struct DevProcess: Identifiable, Hashable {
+struct DevProcess: Identifiable, Hashable, Sendable {
     var id: String { "\(pid):\(port)" }
 
     let name: String
@@ -35,7 +35,7 @@ struct DevProcess: Identifiable, Hashable {
     }
 }
 
-enum ProcessViewMode: String, CaseIterable, Identifiable {
+enum ProcessViewMode: String, CaseIterable, Identifiable, Sendable {
     case dev
     case all
     case activity
@@ -51,7 +51,7 @@ enum ProcessViewMode: String, CaseIterable, Identifiable {
     }
 }
 
-struct ActivityProcess: Identifiable, Hashable {
+struct ActivityProcess: Identifiable, Hashable, Sendable {
     let id: String
     let name: String
     let detail: String
@@ -68,7 +68,7 @@ struct ActivityProcess: Identifiable, Hashable {
     }
 }
 
-enum ActivityProcessKind: String, Hashable {
+enum ActivityProcessKind: String, Hashable, Sendable {
     case simulator
     case application
     case developerTool
@@ -86,7 +86,7 @@ enum ActivityProcessKind: String, Hashable {
     }
 }
 
-enum ProcessKind: String, Hashable {
+enum ProcessKind: String, Hashable, Sendable {
     case dev
     case jsTool
     case localService
@@ -117,7 +117,7 @@ enum ProcessKind: String, Hashable {
     }
 }
 
-struct ResourceUsage: Hashable {
+struct ResourceUsage: Hashable, Sendable {
     let cpuPercent: Double
     let memoryBytes: UInt64
     let uptime: String
@@ -129,15 +129,17 @@ struct ResourceUsage: Hashable {
     }
 }
 
-struct SystemResourceUsage: Hashable {
+struct SystemResourceUsage: Hashable, Sendable {
     let cpuPercent: Double?
     let memoryUsedBytes: UInt64
     let memoryTotalBytes: UInt64
+    let swap: SwapUsage?
 
     static let unavailable = SystemResourceUsage(
         cpuPercent: nil,
         memoryUsedBytes: 0,
-        memoryTotalBytes: ProcessInfo.processInfo.physicalMemory
+        memoryTotalBytes: ProcessInfo.processInfo.physicalMemory,
+        swap: nil
     )
 
     var memoryPercent: Double {
@@ -146,7 +148,16 @@ struct SystemResourceUsage: Hashable {
     }
 }
 
-struct ManualProject: Identifiable, Codable, Hashable {
+struct SwapUsage: Hashable, Sendable {
+    let usedBytes: UInt64
+    let totalBytes: UInt64
+
+    var isActive: Bool {
+        usedBytes > 0
+    }
+}
+
+struct ManualProject: Identifiable, Codable, Hashable, Sendable {
     var id: UUID
     var name: String
     var cwd: String

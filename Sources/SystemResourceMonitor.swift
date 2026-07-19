@@ -18,7 +18,8 @@ final class SystemResourceMonitor {
         return SystemResourceUsage(
             cpuPercent: cpuPercent(current: currentTicks, previous: previousCPUTicks),
             memoryUsedBytes: readMemoryUsedBytes(),
-            memoryTotalBytes: ProcessInfo.processInfo.physicalMemory
+            memoryTotalBytes: ProcessInfo.processInfo.physicalMemory,
+            swap: readSwapUsage()
         )
     }
 
@@ -78,5 +79,19 @@ final class SystemResourceMonitor {
             + UInt64(stats.wire_count)
             + UInt64(stats.compressor_page_count)
         return min(usedPages * UInt64(pageSize), ProcessInfo.processInfo.physicalMemory)
+    }
+
+    private func readSwapUsage() -> SwapUsage? {
+        var usage = xsw_usage()
+        var size = MemoryLayout<xsw_usage>.size
+        guard sysctlbyname("vm.swapusage", &usage, &size, nil, 0) == 0,
+              size == MemoryLayout<xsw_usage>.size else {
+            return nil
+        }
+
+        return SwapUsage(
+            usedBytes: UInt64(usage.xsu_used),
+            totalBytes: UInt64(usage.xsu_total)
+        )
     }
 }

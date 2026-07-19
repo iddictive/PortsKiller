@@ -27,6 +27,8 @@ struct MenuContentView: View {
 
             ScrollView {
                 LazyVStack(spacing: 8) {
+                    SessionRecoveryView()
+
                     if model.processViewMode == .activity {
                         if model.activityProcesses.isEmpty {
                             EmptyStateView()
@@ -134,6 +136,75 @@ struct MenuContentView: View {
         .buttonStyle(.borderless)
         .controlSize(.small)
         .padding(.top, 2)
+    }
+}
+
+private struct SessionRecoveryView: View {
+    @EnvironmentObject private var model: AppModel
+    @State private var isExpanded = false
+
+    private var snapshot: SessionRecoverySnapshot { model.sessionRecoverySnapshot }
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $isExpanded) {
+            VStack(spacing: 6) {
+                if snapshot.recentEvents.isEmpty {
+                    Text("No recovery events yet")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.top, 4)
+                } else {
+                    ForEach(snapshot.recentEvents.prefix(5)) { event in
+                        HStack(spacing: 8) {
+                            Image(systemName: event.succeeded ? "checkmark.circle" : "exclamationmark.circle")
+                                .foregroundStyle(event.succeeded ? Color.secondary : Color.orange)
+                                .frame(width: 14)
+
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(event.title)
+                                    .font(.system(size: 11, weight: .medium))
+                                Text(event.detail)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+
+                            Spacer()
+
+                            Text(event.date, style: .time)
+                                .font(.caption2.monospacedDigit())
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: snapshot.isRecovering ? "arrow.triangle.2.circlepath.circle.fill" : "arrow.triangle.2.circlepath.circle")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(snapshot.isRecovering ? Color.blue : Color.secondary)
+                    .frame(width: 24)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Session recovery")
+                        .font(.system(size: 12, weight: .semibold))
+                    Text(snapshot.statusText)
+                        .font(.caption)
+                        .foregroundStyle(snapshot.issue == nil ? Color.secondary : Color.orange)
+                }
+
+                Spacer()
+
+                if snapshot.pendingCount > 0 {
+                    Text("\(snapshot.pendingCount) pending")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(10)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
     }
 }
 
@@ -552,8 +623,16 @@ private struct SystemResourceSummary: View {
         HStack(spacing: 9) {
             Text("CPU \(cpuText)")
                 .help("Total system CPU")
-            Text("RAM \(memoryText)")
-                .help("Memory in use: \(memoryDetail)")
+            Text("RAM \(memoryCompactText)")
+                .help("Physical memory: \(memoryDetail)")
+            HStack(spacing: 3) {
+                if resources.swap?.isActive == true {
+                    Image(systemName: "arrow.left.arrow.right")
+                }
+                Text("Swap \(swapText)")
+            }
+            .foregroundStyle(resources.swap?.isActive == true ? .orange : .secondary)
+            .help(swapDetail)
         }
         .font(.system(size: 10, weight: .semibold, design: .monospaced))
         .monospacedDigit()
@@ -562,7 +641,7 @@ private struct SystemResourceSummary: View {
         .padding(.vertical, 5)
         .background(Color(nsColor: .controlBackgroundColor), in: Capsule())
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("System CPU \(cpuText), memory \(memoryDetail)")
+        .accessibilityLabel("System CPU \(cpuText), physical memory \(memoryDetail), \(swapDetail)")
     }
 
     private var cpuText: String {
@@ -570,12 +649,23 @@ private struct SystemResourceSummary: View {
         return String(format: "%.0f%%", cpu)
     }
 
-    private var memoryText: String {
-        String(format: "%.0f%%", resources.memoryPercent)
+    private var memoryCompactText: String {
+        "\(byteString(resources.memoryUsedBytes))/\(byteString(resources.memoryTotalBytes))"
     }
 
     private var memoryDetail: String {
         "\(byteString(resources.memoryUsedBytes)) of \(byteString(resources.memoryTotalBytes))"
+    }
+
+    private var swapText: String {
+        guard let swap = resources.swap else { return "--" }
+        return swap.usedBytes == 0 ? "0 B" : byteString(swap.usedBytes)
+    }
+
+    private var swapDetail: String {
+        guard let swap = resources.swap else { return "Swap unavailable" }
+        guard swap.isActive else { return "Swap not in use" }
+        return "Swap in use: \(byteString(swap.usedBytes))"
     }
 }
 
