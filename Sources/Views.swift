@@ -942,6 +942,32 @@ struct PreferencesView: View {
                     SettingsBlock {
                         VStack(alignment: .leading, spacing: 12) {
                             HStack(spacing: 10) {
+                                Image(systemName: "arrow.triangle.2.circlepath.circle.fill")
+                                    .font(.system(size: 18, weight: .semibold))
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 28, height: 28)
+
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Codex session recovery")
+                                        .font(.system(size: 13, weight: .semibold))
+                                    Text("Disable to stop reading ~/.codex sessions and skip resume attempts when apps crash.")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+
+                                Spacer()
+
+                                Toggle(
+                                    "",
+                                    isOn: Binding(
+                                        get: { model.isSessionRecoveryEnabled },
+                                        set: { model.setSessionRecoveryEnabled($0) }
+                                    )
+                                )
+                                .labelsHidden()
+                            }
+
+                            HStack(spacing: 10) {
                                 Image(systemName: "arrow.down.circle")
                                     .font(.system(size: 18, weight: .semibold))
                                     .foregroundStyle(.secondary)

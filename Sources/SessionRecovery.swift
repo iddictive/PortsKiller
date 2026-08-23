@@ -197,19 +197,23 @@ final class SessionRecoveryService: ObservableObject, @unchecked Sendable {
         fallbackTimer = nil
         scanWorkItem?.cancel()
         scanWorkItem = nil
-        if stateSaveWorkItem != nil {
-            saveState()
+        stateSaveWorkItem?.cancel()
+        stateSaveWorkItem = nil
+        terminatePersistedActiveProcesses()
+        state.active.removeAll()
+        state.pending.removeAll()
+        for process in runningProcesses.values where process.isRunning {
+            process.terminate()
         }
+        runningProcesses.removeAll()
+        saveState()
         if let eventStream {
             FSEventStreamStop(eventStream)
             FSEventStreamInvalidate(eventStream)
             self.eventStream = nil
         }
-        for process in runningProcesses.values where process.isRunning {
-            process.terminate()
-        }
-        runningProcesses.removeAll()
         isRunning = false
+        issue = nil
         publishSnapshot()
     }
 
@@ -610,6 +614,14 @@ final class SessionRecoveryService: ObservableObject, @unchecked Sendable {
     private func processRecordIsAlive(_ active: SessionRecoveryActive) -> Bool {
         guard kill(active.pid, 0) == 0, let expected = active.processStart else { return false }
         return processStartIdentity(active.pid) == expected
+    }
+
+    private func terminatePersistedActiveProcesses() {
+        for active in state.active.values {
+            guard active.processStart != nil else { continue }
+            guard processRecordIsAlive(active) else { continue }
+            kill(active.pid, SIGTERM)
+        }
     }
 
     private func processStartIdentity(_ pid: Int32) -> String? {

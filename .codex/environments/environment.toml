@@ -26,6 +26,11 @@ icon = "test"
 command = ".build/debug/PortsKiller --scan-all"
 
 [[actions]]
+name = "Recovery Status"
+icon = "test"
+command = ".build/debug/PortsKiller --recovery-status"
+
+[[actions]]
 name = "Run App"
 icon = "run"
 command = "scripts/build-app.sh && open -n .build/PortsKiller.app"

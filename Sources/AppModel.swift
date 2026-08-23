@@ -2,6 +2,21 @@ import AppKit
 import Combine
 import Foundation
 
+private enum SessionRecoveryPreference {
+    static let key = "SessionRecovery.enabled"
+
+    static func load() -> Bool {
+        guard let value = UserDefaults.standard.object(forKey: key) as? Bool else {
+            return false
+        }
+        return value
+    }
+
+    static func save(_ enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: key)
+    }
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     private enum ScanResult: Sendable {
@@ -16,6 +31,7 @@ final class AppModel: ObservableObject {
     @Published var selectedLogProjectID: UUID?
     @Published var lastError: String?
     @Published var loginItemEnabled: Bool = false
+    @Published var isSessionRecoveryEnabled: Bool = SessionRecoveryPreference.load()
     @Published private(set) var sessionRecoverySnapshot = SessionRecoverySnapshot()
     @Published var menuBarMetric: MenuBarMetric = .cpu {
         didSet { menuBarMetricPreferences.save(menuBarMetric) }
@@ -47,7 +63,13 @@ final class AppModel: ObservableObject {
             .receive(on: RunLoop.main)
             .sink { [weak self] snapshot in self?.sessionRecoverySnapshot = snapshot }
             .store(in: &cancellables)
-        Task { await sessionRecovery.start() }
+        Task {
+            if isSessionRecoveryEnabled {
+                await sessionRecovery.start()
+            } else {
+                await sessionRecovery.stop()
+            }
+        }
         refreshSystemResources()
         refresh()
         GitHubUpdater.shared.checkForUpdates()
@@ -214,6 +236,19 @@ final class AppModel: ObservableObject {
         } catch {
             loginItemEnabled = loginItemManager.isEnabled
             lastError = error.localizedDescription
+        }
+    }
+
+    func setSessionRecoveryEnabled(_ enabled: Bool) {
+        guard isSessionRecoveryEnabled != enabled else { return }
+        isSessionRecoveryEnabled = enabled
+        SessionRecoveryPreference.save(enabled)
+        Task {
+            if enabled {
+                await sessionRecovery.start()
+            } else {
+                await sessionRecovery.stop()
+            }
         }
     }
 }
