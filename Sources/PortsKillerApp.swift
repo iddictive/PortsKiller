@@ -44,6 +44,10 @@ enum PortsKillerMain {
         }
 
         if CommandLine.arguments.contains("--recovery-status") {
+            guard FeatureFlags.sessionRecovery else {
+                print("disabled")
+                exit(0)
+            }
             let snapshot = SessionRecoveryService.persistedSnapshot()
             print("active=\(snapshot.activeCount)\tpending=\(snapshot.pendingCount)\tevents=\(snapshot.recentEvents.count)")
             exit(0)
@@ -100,11 +104,11 @@ private struct MenuBarIcon: View {
         .monospacedDigit()
         .fixedSize()
         .help(statusHelp)
-        .accessibilityLabel("\(presentation.accessibilityLabel(hasWarning: hasWarning)), \(recovery.statusText)")
+        .accessibilityLabel(presentation.accessibilityLabel(hasWarning: hasWarning))
     }
 
     private var statusText: Text {
-        switch presentation.content(isRecovering: recovery.isRecovering) {
+        switch presentation.content(isRecovering: FeatureFlags.sessionRecovery && recovery.isRecovering) {
         case .recovering:
             return appendingWarning(
                 to: Text("⟳")
@@ -146,9 +150,10 @@ private struct MenuBarIcon: View {
     }
 
     private var statusHelp: String {
-        presentation.showsSwapIndicator
-            ? "\(swapHelp) · \(recovery.statusText)"
-            : recovery.statusText
+        if FeatureFlags.sessionRecovery {
+            return presentation.showsSwapIndicator ? "\(swapHelp) · \(recovery.statusText)" : recovery.statusText
+        }
+        return presentation.showsSwapIndicator ? swapHelp : presentation.accessibilityLabel(hasWarning: hasWarning)
     }
 
 }

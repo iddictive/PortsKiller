@@ -28,12 +28,12 @@ struct MenuContentView: View {
     }
 
     private var mainMenu: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 8) {
             header
 
             FittingScrollView {
                 VStack(spacing: 8) {
-                    SessionRecoveryView()
+                    if FeatureFlags.sessionRecovery { SessionRecoveryView() }
 
                     if model.processViewMode == .activity {
                         if model.activityProcesses.isEmpty {
@@ -90,7 +90,7 @@ struct MenuContentView: View {
     }
 
     private var footer: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 6) {
             Divider()
             HStack(spacing: 12) {
                 Button { openWindow(id: "add-project") } label: { Label("Add Project", systemImage: "plus") }
@@ -209,6 +209,14 @@ private struct EmptyStateView: View {
     }
 }
 
+private struct ProcessRowSurface: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .padding(10)
+            .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
 private struct ActivityProcessRow: View {
     @EnvironmentObject private var model: AppModel
     let process: ActivityProcess
@@ -248,8 +256,7 @@ private struct ActivityProcessRow: View {
 
 
         }
-        .padding(.vertical, 8)
-        .padding(.horizontal, 4)
+        .modifier(ProcessRowSurface())
         .help(compactActivityCommand(process.command))
     }
 }
@@ -282,8 +289,7 @@ private struct ProcessRow: View {
                 }
             }
         }
-        .padding(.vertical, 8)
-        .padding(.horizontal, 4)
+        .modifier(ProcessRowSurface())
     }
 
     private var identity: some View {
@@ -799,25 +805,27 @@ struct PreferencesView: View {
 
                     SettingsBlock {
                         VStack(alignment: .leading, spacing: 12) {
-                            HStack(spacing: 10) {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text("Codex session recovery")
-                                        .font(.system(size: 13, weight: .semibold))
-                                    Text("Disable to stop reading ~/.codex sessions and skip resume attempts when apps crash.")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
+                            if FeatureFlags.sessionRecovery {
+                                HStack(spacing: 10) {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("Codex session recovery")
+                                            .font(.system(size: 13, weight: .semibold))
+                                        Text("Disable to stop reading ~/.codex sessions and skip resume attempts when apps crash.")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
 
-                                Spacer()
+                                    Spacer()
 
-                                Toggle(
-                                    "",
-                                    isOn: Binding(
-                                        get: { model.isSessionRecoveryEnabled },
-                                        set: { model.setSessionRecoveryEnabled($0) }
+                                    Toggle(
+                                        "",
+                                        isOn: Binding(
+                                            get: { model.isSessionRecoveryEnabled },
+                                            set: { model.setSessionRecoveryEnabled($0) }
+                                        )
                                     )
-                                )
-                                .labelsHidden()
+                                    .labelsHidden()
+                                }
                             }
 
                             HStack(spacing: 10) {

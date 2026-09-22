@@ -31,7 +31,7 @@ final class AppModel: ObservableObject {
     @Published var selectedLogProjectID: UUID?
     @Published var lastError: String?
     @Published var loginItemEnabled: Bool = false
-    @Published var isSessionRecoveryEnabled: Bool = SessionRecoveryPreference.load()
+    @Published var isSessionRecoveryEnabled: Bool = FeatureFlags.sessionRecovery && SessionRecoveryPreference.load()
     @Published private(set) var sessionRecoverySnapshot = SessionRecoverySnapshot()
     @Published var menuBarMetric: MenuBarMetric = .cpu {
         didSet { menuBarMetricPreferences.save(menuBarMetric) }
@@ -41,7 +41,7 @@ final class AppModel: ObservableObject {
     }
 
     let runner = ManagedProcessRunner()
-    let sessionRecovery = SessionRecoveryService()
+    let sessionRecovery: SessionRecoveryService? = FeatureFlags.sessionRecovery ? SessionRecoveryService() : nil
 
     private let store = ProjectStore()
     private let processController = ProcessController()
@@ -59,15 +59,17 @@ final class AppModel: ObservableObject {
         menuBarMetric = menuBarMetricPreferences.load()
         projects = store.load()
         loginItemEnabled = loginItemManager.isEnabled
-        sessionRecovery.$snapshot
-            .receive(on: RunLoop.main)
-            .sink { [weak self] snapshot in self?.sessionRecoverySnapshot = snapshot }
-            .store(in: &cancellables)
-        Task {
-            if isSessionRecoveryEnabled {
-                await sessionRecovery.start()
-            } else {
-                await sessionRecovery.stop()
+        if let sessionRecovery {
+            sessionRecovery.$snapshot
+                .receive(on: RunLoop.main)
+                .sink { [weak self] snapshot in self?.sessionRecoverySnapshot = snapshot }
+                .store(in: &cancellables)
+            Task {
+                if isSessionRecoveryEnabled {
+                    await sessionRecovery.start()
+                } else {
+                    await sessionRecovery.stop()
+                }
             }
         }
         refreshSystemResources()
@@ -240,7 +242,7 @@ final class AppModel: ObservableObject {
     }
 
     func setSessionRecoveryEnabled(_ enabled: Bool) {
-        guard isSessionRecoveryEnabled != enabled else { return }
+        guard FeatureFlags.sessionRecovery, let sessionRecovery, isSessionRecoveryEnabled != enabled else { return }
         isSessionRecoveryEnabled = enabled
         SessionRecoveryPreference.save(enabled)
         Task {
