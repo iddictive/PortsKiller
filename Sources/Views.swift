@@ -7,7 +7,7 @@ struct MenuContentView: View {
     @State private var activePanel: MenuPanel?
 
     var body: some View {
-        Group {
+        VStack(spacing: 0) {
             switch activePanel {
             case .preferences:
                 PreferencesView {
@@ -18,15 +18,21 @@ struct MenuContentView: View {
                 mainMenu
             }
         }
-        .background(Color(nsColor: .windowBackgroundColor))
+        .fixedSize()
+        .background(.regularMaterial)
+        .background {
+            GeometryReader { proxy in
+                PanelWindowSize(size: proxy.size)
+            }
+        }
     }
 
     private var mainMenu: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
 
-            ScrollView {
-                LazyVStack(spacing: 8) {
+            FittingScrollView {
+                VStack(spacing: 8) {
                     SessionRecoveryView()
 
                     if model.processViewMode == .activity {
@@ -49,7 +55,6 @@ struct MenuContentView: View {
                 }
                 .padding(.vertical, 2)
             }
-            .frame(maxHeight: 560)
 
             footer
 
@@ -61,24 +66,13 @@ struct MenuContentView: View {
             }
         }
         .padding(14)
-        .frame(width: 680)
+        .screenBoundedPanel(.processes)
     }
 
     private var header: some View {
         HStack(spacing: 10) {
-            Image(systemName: "terminal.fill")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(.primary)
-                .frame(width: 26, height: 26)
-                .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 7))
-
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Processes")
-                    .font(.system(size: 14, weight: .semibold))
-                Text(headerSubtitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            Text("Processes")
+                .font(.headline)
 
             Spacer()
 
@@ -89,53 +83,27 @@ struct MenuContentView: View {
             }
             .labelsHidden()
             .pickerStyle(.segmented)
-            .frame(width: 184)
+            .fixedSize()
 
             CountBadge(count: model.displayedProcessCount, unknownCount: model.unknownProcessCount)
         }
     }
 
-    private var headerSubtitle: String {
-        switch model.processViewMode {
-        case .dev: return "JS TCP listeners"
-        case .all: return "All TCP listeners"
-        case .activity: return "Simulators and heavy processes"
-        }
-    }
-
     private var footer: some View {
-        HStack(spacing: 8) {
-            Button {
-                openWindow(id: "add-project")
-            } label: {
-                Label("Add", systemImage: "plus")
+        VStack(spacing: 12) {
+            Divider()
+            HStack(spacing: 12) {
+                Button { openWindow(id: "add-project") } label: { Label("Add Project", systemImage: "plus") }
+                Button { model.refresh() } label: { Image(systemName: "arrow.clockwise") }
+                    .help("Refresh")
+                    .accessibilityLabel("Refresh")
+                Spacer()
+                Button("Preferences") { activePanel = .preferences }
+                Button("Quit") { NSApplication.shared.terminate(nil) }
             }
-
-            Button {
-                model.refresh()
-            } label: {
-                Label("Refresh", systemImage: "arrow.clockwise")
-            }
-
-            Button {
-                activePanel = .preferences
-            } label: {
-                Label("Prefs", systemImage: "slider.horizontal.3")
-            }
-
-            Spacer()
-
+            .controlSize(.small)
             SystemResourceSummary(resources: model.systemResources)
-
-            Button {
-                NSApplication.shared.terminate(nil)
-            } label: {
-                Label("Quit", systemImage: "power")
-            }
         }
-        .buttonStyle(.borderless)
-        .controlSize(.small)
-        .padding(.top, 2)
     }
 }
 
@@ -181,14 +149,7 @@ private struct SessionRecoveryView: View {
             }
         } label: {
             HStack(spacing: 10) {
-                Image(systemName: snapshot.isRecovering ? "arrow.triangle.2.circlepath.circle.fill" : "arrow.triangle.2.circlepath.circle")
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(snapshot.isRecovering ? Color.blue : Color.secondary)
-                    .frame(width: 24)
-
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Session recovery")
-                        .font(.system(size: 12, weight: .semibold))
                     Text(snapshot.statusText)
                         .font(.caption)
                         .foregroundStyle(snapshot.issue == nil ? Color.secondary : Color.orange)
@@ -203,8 +164,8 @@ private struct SessionRecoveryView: View {
                 }
             }
         }
-        .padding(10)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+        .padding(.vertical, 8)
+        .padding(.horizontal, 4)
     }
 }
 
@@ -228,7 +189,7 @@ private struct EmptyStateView: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 28)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+
     }
 
     private var emptyTitle: String {
@@ -272,10 +233,9 @@ private struct ActivityProcessRow: View {
                         .lineLimit(1)
                     }
                 }
-                .frame(width: 250, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
                 ResourceMonitor(resources: process.resources, memoryLabel: "RSS")
-                    .frame(width: 188, alignment: .leading)
 
                 Spacer(minLength: 8)
 
@@ -286,22 +246,11 @@ private struct ActivityProcessRow: View {
                 }
             }
 
-            HStack(spacing: 8) {
-                if let pid = process.primaryPID {
-                    Text(verbatim: "PID \(pid)")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
 
-                Text(verbatim: compactActivityCommand(process.command))
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
         }
-        .padding(10)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+        .padding(.vertical, 8)
+        .padding(.horizontal, 4)
+        .help(compactActivityCommand(process.command))
     }
 }
 
@@ -313,33 +262,13 @@ private struct ProcessRow: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 12) {
                 identity
-                    .frame(width: 220, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
                 ResourceMonitor(resources: process.resources)
-                    .frame(width: 188, alignment: .leading)
 
                 Spacer(minLength: 8)
 
                 actionButtons
-            }
-
-            HStack(spacing: 8) {
-                Text(process.urlString)
-                    .font(.system(size: 11, weight: .medium, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-
-                Text(verbatim: "PID \(process.pid)")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-
-                if let command = visibleCommand(process.command) {
-                    Text(verbatim: command)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
             }
 
             if let projectID = process.projectID {
@@ -353,8 +282,8 @@ private struct ProcessRow: View {
                 }
             }
         }
-        .padding(10)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+        .padding(.vertical, 8)
+        .padding(.horizontal, 4)
     }
 
     private var identity: some View {
@@ -369,35 +298,33 @@ private struct ProcessRow: View {
                         .truncationMode(.tail)
                 }
 
-                HStack(spacing: 6) {
-                    Text(process.framework)
-                    if model.processViewMode == .all {
-                        KindBadge(kind: process.kind)
-                    }
-                    if let cwd = process.cwd {
-                        Text(URL(fileURLWithPath: cwd).lastPathComponent)
-                    }
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
+                Button(process.urlString) { model.open(process) }
+                    .buttonStyle(.link)
+                    .font(.caption)
+                    .lineLimit(1)
+                    .help("\(process.framework) · PID \(process.pid)\n\(process.command)")
             }
         }
     }
 
     private var actionButtons: some View {
-        HStack(spacing: 4) {
-            IconActionButton("Open", systemImage: "safari") { model.open(process) }
-            IconActionButton("Copy URL", systemImage: "doc.on.doc") { model.copyURL(process) }
-            IconActionButton("Reveal in Finder", systemImage: "folder", disabled: process.cwd == nil) {
-                model.revealProjectFolder(process)
+        HStack(spacing: 8) {
+            Menu {
+                Button("Open in Browser") { model.open(process) }
+                Button("Copy URL") { model.copyURL(process) }
+                Button("Reveal in Finder") { model.revealProjectFolder(process) }
+                    .disabled(process.cwd == nil)
+                Button("Restart") { model.restart(process) }
+                    .disabled(!process.canRestart)
+            } label: {
+                Image(systemName: "ellipsis")
             }
-            IconActionButton("Restart", systemImage: "arrow.clockwise", disabled: !process.canRestart) {
-                model.restart(process)
-            }
-            IconActionButton("Stop", systemImage: "stop.fill", role: .destructive, disabled: !process.canStop) {
-                model.stop(process)
-            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .accessibilityLabel("Actions for \(process.name)")
+            Button("Stop", role: .destructive) { model.stop(process) }
+                .disabled(!process.canStop)
+                .controlSize(.small)
         }
     }
 }
@@ -407,20 +334,14 @@ private struct ResourceMonitor: View {
     var memoryLabel: String = "RAM"
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 8) {
-                MetricValue(label: "CPU", value: cpuText)
-                MetricValue(label: memoryLabel, value: memoryText)
-                MetricValue(label: "UP", value: cleanUptime)
-            }
-
-            HStack(spacing: 5) {
-                MiniMeter(value: min(resources.cpuPercent / 100, 1), tint: cpuTint)
-                    .help("CPU \(cpuText)")
-                MiniMeter(value: min(resources.memoryMegabytes / 2048, 1), tint: .blue)
-                    .help("\(memoryLabel) \(memoryText)")
-            }
+        HStack(spacing: 12) {
+            Text("CPU \(cpuText)")
+            Text("\(memoryLabel) \(memoryText)")
         }
+        .font(.caption.monospacedDigit())
+        .foregroundStyle(.secondary)
+        .fixedSize()
+        .help("Uptime \(cleanUptime)")
     }
 
     private var cpuText: String {
@@ -439,48 +360,6 @@ private struct ResourceMonitor: View {
         resources.uptime.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private var cpuTint: Color {
-        if resources.cpuPercent >= 80 { return .red }
-        if resources.cpuPercent >= 35 { return .orange }
-        return .green
-    }
-}
-
-private struct MetricValue: View {
-    let label: String
-    let value: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text(label)
-                .font(.system(size: 9, weight: .medium))
-                .foregroundStyle(.tertiary)
-            Text(value)
-                .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-        }
-        .frame(width: 54, alignment: .leading)
-    }
-}
-
-private struct MiniMeter: View {
-    let value: Double
-    let tint: Color
-
-    var body: some View {
-        GeometryReader { proxy in
-            ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(Color.secondary.opacity(0.14))
-                Capsule()
-                    .fill(tint.opacity(0.78))
-                    .frame(width: max(3, proxy.size.width * value))
-            }
-        }
-        .frame(height: 4)
-    }
 }
 
 private struct StatusDot: View {
@@ -490,7 +369,7 @@ private struct StatusDot: View {
         Circle()
             .fill(color)
             .frame(width: 8, height: 8)
-            .shadow(color: color.opacity(0.35), radius: 3, y: 1)
+
     }
 
     private var color: Color {
@@ -570,20 +449,11 @@ private struct IconActionButton: View {
 
     var body: some View {
         Button(role: role, action: action) {
-            Image(systemName: systemImage)
-                .font(.system(size: 12, weight: .semibold))
-                .frame(width: 24, height: 24)
-                .contentShape(Rectangle())
+            Label(title, systemImage: systemImage)
         }
-        .buttonStyle(.plain)
-        .foregroundStyle(disabled ? Color(nsColor: .tertiaryLabelColor) : foregroundStyle)
-        .background(Color(nsColor: .windowBackgroundColor).opacity(disabled ? 0.35 : 0.82), in: RoundedRectangle(cornerRadius: 6))
+        .controlSize(.small)
         .disabled(disabled)
         .help(title)
-    }
-
-    private var foregroundStyle: Color {
-        role == .destructive ? .red : .primary
     }
 }
 
@@ -607,7 +477,6 @@ private struct CountBadge: View {
         }
         .padding(.horizontal, 9)
         .padding(.vertical, 5)
-        .background(Color(nsColor: .controlBackgroundColor), in: Capsule())
     }
 
     private var dotColor: Color {
@@ -639,7 +508,6 @@ private struct SystemResourceSummary: View {
         .foregroundStyle(.secondary)
         .padding(.horizontal, 9)
         .padding(.vertical, 5)
-        .background(Color(nsColor: .controlBackgroundColor), in: Capsule())
         .accessibilityElement(children: .combine)
         .accessibilityLabel("System CPU \(cpuText), physical memory \(memoryDetail), \(swapDetail)")
     }
@@ -692,7 +560,7 @@ struct AddProjectView: View {
                 Button("Cancel") { onClose() }
             }
 
-            ScrollView {
+            FittingScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     VStack(alignment: .leading, spacing: 10) {
                         HStack(spacing: 8) {
@@ -714,7 +582,6 @@ struct AddProjectView: View {
                             .lineLimit(1)
                     }
                     .padding(12)
-                    .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
 
                     VStack(alignment: .leading, spacing: 12) {
                         HStack(spacing: 10) {
@@ -726,7 +593,6 @@ struct AddProjectView: View {
                             FieldBlock(title: "Port") {
                                 TextField("3000", text: $port)
                                     .textFieldStyle(.roundedBorder)
-                                    .frame(width: 86)
                             }
                         }
 
@@ -754,7 +620,6 @@ struct AddProjectView: View {
                                     }
                                 }
                                 .labelsHidden()
-                                .frame(width: 150)
                                 .onChange(of: selectedScript) { _ in applySelectedScript() }
                             }
                         }
@@ -766,7 +631,6 @@ struct AddProjectView: View {
                         }
                     }
                     .padding(12)
-                    .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
 
                     if !scripts.isEmpty {
                         ScriptPreviewList(scripts: scripts, selectedScript: $selectedScript)
@@ -774,7 +638,6 @@ struct AddProjectView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxHeight: 560)
 
             HStack {
                 Button {
@@ -800,7 +663,7 @@ struct AddProjectView: View {
             }
         }
         .padding(20)
-        .frame(width: 620)
+        .screenBoundedPanel(.project)
     }
 
     private var isValid: Bool {
@@ -894,15 +757,10 @@ struct PreferencesView: View {
                 Button("Done") { close() }
             }
 
-            ScrollView {
+            FittingScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     SettingsBlock {
                         HStack(spacing: 10) {
-                            Image(systemName: "power.circle")
-                                .font(.system(size: 18, weight: .semibold))
-                                .foregroundStyle(.secondary)
-                                .frame(width: 28, height: 28)
-
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("Launch at login")
                                     .font(.system(size: 13, weight: .semibold))
@@ -942,11 +800,6 @@ struct PreferencesView: View {
                     SettingsBlock {
                         VStack(alignment: .leading, spacing: 12) {
                             HStack(spacing: 10) {
-                                Image(systemName: "arrow.triangle.2.circlepath.circle.fill")
-                                    .font(.system(size: 18, weight: .semibold))
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: 28, height: 28)
-
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text("Codex session recovery")
                                         .font(.system(size: 13, weight: .semibold))
@@ -968,11 +821,6 @@ struct PreferencesView: View {
                             }
 
                             HStack(spacing: 10) {
-                                Image(systemName: "arrow.down.circle")
-                                    .font(.system(size: 18, weight: .semibold))
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: 28, height: 28)
-
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text("Software updates")
                                         .font(.system(size: 13, weight: .semibold))
@@ -1034,7 +882,7 @@ struct PreferencesView: View {
                             .foregroundStyle(.secondary)
                     }
 
-                    LazyVStack(spacing: 8) {
+                    VStack(spacing: 8) {
                         if model.projects.isEmpty {
                             SettingsBlock {
                                 Text("No saved projects")
@@ -1053,10 +901,9 @@ struct PreferencesView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxHeight: 430)
         }
         .padding(20)
-        .frame(width: 620)
+        .screenBoundedPanel(onClose == nil ? .preferences : .processes)
     }
 
     private func close() {
@@ -1151,8 +998,7 @@ private struct SettingsBlock<Content: View>: View {
 
     var body: some View {
         content
-            .padding(12)
-            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+            .padding(.vertical, 6)
     }
 }
 
@@ -1229,12 +1075,7 @@ struct LogView: View {
 }
 
 private func sheetHeader(_ title: String, systemImage: String) -> some View {
-    HStack(spacing: 8) {
-        Image(systemName: systemImage)
-            .font(.system(size: 14, weight: .semibold))
-        Text(title)
-            .font(.headline)
-    }
+    Text(title).font(.headline)
 }
 
 private func compactCommand(_ command: String) -> String {

@@ -79,7 +79,7 @@ struct PortsKillerApp: App {
             AddProjectWindowView()
                 .environmentObject(model)
         }
-        .defaultSize(width: 620, height: 700)
+        .windowResizability(.contentSize)
     }
 }
 
