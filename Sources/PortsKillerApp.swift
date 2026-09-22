@@ -3,7 +3,7 @@ import SwiftUI
 
 @main
 enum PortsKillerMain {
-    static func main() {
+    @MainActor static func main() {
         if CommandLine.arguments.contains("--scan-once") || CommandLine.arguments.contains("--scan-all") {
             let projects = ProjectStore().load()
             let mode: ProcessViewMode = CommandLine.arguments.contains("--scan-all") ? .all : .dev
@@ -53,41 +53,14 @@ enum PortsKillerMain {
             exit(0)
         }
 
-        PortsKillerApp.main()
+        let application = NSApplication.shared
+        let windows = UtilityWindows()
+        application.delegate = windows
+        withExtendedLifetime(windows) { application.run() }
     }
 }
 
-struct PortsKillerApp: App {
-    @StateObject private var model = AppModel()
-
-    var body: some Scene {
-        MenuBarExtra {
-            MenuContentView()
-                .environmentObject(model)
-        } label: {
-            MenuBarIcon(
-                resources: model.systemResources,
-                metric: model.menuBarMetric,
-                hasWarning: model.unknownProcessCount > 0,
-                recovery: model.sessionRecoverySnapshot
-            )
-        }
-        .menuBarExtraStyle(.window)
-
-        Settings {
-            PreferencesView()
-                .environmentObject(model)
-        }
-
-        Window("Add Project", id: "add-project") {
-            AddProjectWindowView()
-                .environmentObject(model)
-        }
-        .windowResizability(.contentSize)
-    }
-}
-
-private struct MenuBarIcon: View {
+struct MenuBarIcon: View {
     let resources: SystemResourceUsage
     let metric: MenuBarMetric
     let hasWarning: Bool

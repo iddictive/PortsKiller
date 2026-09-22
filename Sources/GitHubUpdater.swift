@@ -12,6 +12,13 @@ final class GitHubUpdater: ObservableObject {
     private let automaticDownloadsKey = "GitHubUpdater.automaticallyDownloadsUpdates"
 
     let currentVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1.0"
+    let isAvailable = GitHubUpdater.isAvailable(bundleIdentifier: Bundle.main.bundleIdentifier, bundleURL: Bundle.main.bundleURL)
+    private var manualFeedbackRequested = false
+    private var releaseNotes: [String] = []
+
+    nonisolated static func isAvailable(bundleIdentifier: String?, bundleURL: URL) -> Bool {
+        bundleIdentifier == "com.md.PortsKiller" && bundleURL.standardizedFileURL.path == "/Applications/PortsKiller.app"
+    }
 
     @Published var automaticallyChecksForUpdates: Bool {
         didSet {
@@ -45,6 +52,13 @@ final class GitHubUpdater: ObservableObject {
     }
 
     func checkForUpdates(manual: Bool = false) {
+        guard isAvailable else {
+            if manual {
+                _ = runUpdaterAlert(messageText: "Updates unavailable", informativeText: "Open the installed PortsKiller app in Applications to check for updates.", primaryButtonTitle: "OK")
+            }
+            return
+        }
+        if manual { manualFeedbackRequested = true }
         guard !isChecking else { return }
         guard manual || automaticallyChecksForUpdates else { return }
 
@@ -60,22 +74,38 @@ final class GitHubUpdater: ObservableObject {
                 latestVersion = latest
                 updateAvailable = compareVersions(current: currentVersion, latest: latest)
                 downloadURL = updateAvailable ? release.dmgAssetURL : nil
+                guard !updateAvailable || downloadURL != nil else { throw UpdaterError.missingAsset }
+                releaseNotes = UpdateReleaseNotes.summaryLines(from: release.body ?? "")
+                if releaseNotes.isEmpty {
+                    releaseNotes = await changelogNotes(tag: release.tagName, version: latest)
+                }
+                let showFeedback = manualFeedbackRequested
+                manualFeedbackRequested = false
+                isChecking = false
 
                 if updateAvailable {
-                    if manual {
+                    if showFeedback {
                         showUpdateAlert(version: latest)
                     } else if automaticallyDownloadsUpdates {
                         startDownload()
                     }
-                } else if manual {
+                } else if showFeedback {
                     _ = runUpdaterAlert(
                         messageText: "PortsKiller is up to date",
-                        informativeText: "Installed version \(currentVersion) is the latest version.",
+                        informativeText: withReleaseNotes("Installed version \(currentVersion) is the latest version."),
                         primaryButtonTitle: "OK"
                     )
                 }
             } catch {
                 self.error = error.localizedDescription
+                updateAvailable = false
+                downloadURL = nil
+                isChecking = false
+                let showFeedback = manualFeedbackRequested
+                manualFeedbackRequested = false
+                if showFeedback {
+                    _ = runUpdaterAlert(messageText: "Couldn’t check for updates", informativeText: error.localizedDescription, primaryButtonTitle: "OK")
+                }
             }
 
             isChecking = false
@@ -83,30 +113,36 @@ final class GitHubUpdater: ObservableObject {
     }
 
     func startDownload() {
+        guard isAvailable else { return }
         guard let downloadURL, !isDownloading else { return }
 
         isDownloading = true
         downloadProgress = 0
         error = nil
 
-        downloadTask = URLSession.shared.downloadTask(with: downloadURL) { [weak self] localURL, _, downloadError in
+        downloadTask = URLSession.shared.downloadTask(with: downloadURL) { [weak self] localURL, response, downloadError in
+            // URLSession removes its temporary file when this callback returns.
+            // Preserve it before crossing to the main actor.
+            let downloadedFile: Result<URL, Error> = Result {
+                if let downloadError { throw downloadError }
+                guard let localURL, (response as? HTTPURLResponse)?.statusCode == 200 else {
+                    throw UpdaterError.downloadFailed
+                }
+                let tempURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("PortsKillerUpdate.dmg")
+                if FileManager.default.fileExists(atPath: tempURL.path) {
+                    try FileManager.default.removeItem(at: tempURL)
+                }
+                try FileManager.default.copyItem(at: localURL, to: tempURL)
+                return tempURL
+            }
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                isDownloading = false
-                observation = nil
-
-                guard let localURL, downloadError == nil else {
-                    error = downloadError?.localizedDescription ?? "Download failed"
-                    return
-                }
-
-                let tempURL = URL(fileURLWithPath: NSTemporaryDirectory())
-                    .appendingPathComponent("PortsKillerUpdate.dmg")
-                try? FileManager.default.removeItem(at: tempURL)
+                self.isDownloading = false
+                self.observation = nil
 
                 do {
-                    try FileManager.default.copyItem(at: localURL, to: tempURL)
-                    performInstallation(dmgPath: tempURL.path)
+                    let tempURL = try downloadedFile.get()
+                    self.performInstallation(dmgPath: tempURL.path)
                 } catch {
                     self.error = error.localizedDescription
                 }
@@ -127,6 +163,7 @@ final class GitHubUpdater: ObservableObject {
         var request = URLRequest(url: url)
         request.setValue("PortsKillerUpdater", forHTTPHeaderField: "User-Agent")
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        request.timeoutInterval = 15
 
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse,
@@ -142,10 +179,27 @@ final class GitHubUpdater: ObservableObject {
         latest.compare(current, options: .numeric) == .orderedDescending
     }
 
+    private func changelogNotes(tag: String, version: String) async -> [String] {
+        guard let tag = tag.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
+              let url = URL(string: "https://raw.githubusercontent.com/\(repo)/\(tag)/CHANGELOG.md") else { return [] }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 10
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let markdown = String(data: data, encoding: .utf8) else { return [] }
+        return UpdateReleaseNotes.releaseNotes(from: markdown, version: version)
+    }
+
+    private func withReleaseNotes(_ base: String) -> String {
+        guard !releaseNotes.isEmpty else { return base }
+        return base + "\n\nWhat’s new:\n" + releaseNotes.map { "• " + $0 }.joined(separator: "\n")
+    }
+
     private func showUpdateAlert(version: String) {
         let response = runUpdaterAlert(
             messageText: "Update Available",
-            informativeText: "PortsKiller \(version) is available. Download and install it now?",
+            informativeText: withReleaseNotes("PortsKiller \(version) is available. Download and install it now?"),
             primaryButtonTitle: "Download & Install",
             secondaryButtonTitle: "Later"
         )
@@ -158,7 +212,7 @@ final class GitHubUpdater: ObservableObject {
     private func performInstallation(dmgPath: String) {
         let response = runUpdaterAlert(
             messageText: "Installation Ready",
-            informativeText: "PortsKiller will close, install the downloaded update, and relaunch.",
+            informativeText: withReleaseNotes("PortsKiller will close, install the downloaded update, and relaunch."),
             primaryButtonTitle: "Install & Relaunch",
             secondaryButtonTitle: "Later"
         )
@@ -214,6 +268,10 @@ final class GitHubUpdater: ObservableObject {
     private func runInstallScript(dmgPath: String) {
         let pid = ProcessInfo.processInfo.processIdentifier
         let expectedVersion = latestVersion ?? ""
+        guard expectedVersion.range(of: #"^\d+(?:\.\d+)+$"#, options: .regularExpression) != nil else {
+            error = "Invalid update version."
+            return
+        }
         let script = """
         set -eu
         logPath="/tmp/PortsKillerUpdate.log"
@@ -272,6 +330,12 @@ final class GitHubUpdater: ObservableObject {
         ditto "$sourceAppPath" "$stagedAppPath"
         xattr -rc "$stagedAppPath" || true
         codesign --verify --deep --strict "$stagedAppPath"
+
+        stagedBundleID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$stagedAppPath/Contents/Info.plist" 2>/dev/null || true)"
+        if [ "$stagedBundleID" != "com.md.PortsKiller" ]; then
+            log "Staged app has unexpected bundle identifier: $stagedBundleID"
+            exit 1
+        fi
 
         stagedVersion="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$stagedAppPath/Contents/Info.plist" 2>/dev/null || true)"
         if [ -z "$stagedVersion" ]; then
@@ -332,23 +396,25 @@ final class GitHubUpdater: ObservableObject {
     }
 }
 
-private struct GitHubRelease: Decodable {
+struct GitHubRelease: Decodable {
     let tagName: String
     let assets: [GitHubReleaseAsset]
+    let body: String?
 
     var dmgAssetURL: URL? {
         assets.first { asset in
             asset.name.hasSuffix(".dmg") && asset.name.localizedCaseInsensitiveContains("PortsKiller")
-        }?.browserDownloadURL ?? assets.first { $0.name.hasSuffix(".dmg") }?.browserDownloadURL
+        }?.browserDownloadURL
     }
 
     enum CodingKeys: String, CodingKey {
         case tagName = "tag_name"
         case assets
+        case body
     }
 }
 
-private struct GitHubReleaseAsset: Decodable {
+struct GitHubReleaseAsset: Decodable {
     let name: String
     let browserDownloadURL: URL
 
@@ -360,11 +426,17 @@ private struct GitHubReleaseAsset: Decodable {
 
 private enum UpdaterError: LocalizedError {
     case latestReleaseUnavailable
+    case missingAsset
+    case downloadFailed
 
     var errorDescription: String? {
         switch self {
         case .latestReleaseUnavailable:
             return "Latest release is unavailable."
+        case .missingAsset:
+            return "The release does not include a PortsKiller DMG."
+        case .downloadFailed:
+            return "The update could not be downloaded."
         }
     }
 }

@@ -3,8 +3,8 @@ import SwiftUI
 
 struct MenuContentView: View {
     @EnvironmentObject private var model: AppModel
-    @Environment(\.openWindow) private var openWindow
     @State private var activePanel: MenuPanel?
+    var addProjectAction: ((DevProcess?) -> Void)? = nil
 
     var body: some View {
         VStack(spacing: 0) {
@@ -18,13 +18,8 @@ struct MenuContentView: View {
                 mainMenu
             }
         }
-        .fixedSize()
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(.regularMaterial)
-        .background {
-            GeometryReader { proxy in
-                PanelWindowSize(size: proxy.size)
-            }
-        }
     }
 
     private var mainMenu: some View {
@@ -48,13 +43,14 @@ struct MenuContentView: View {
                             EmptyStateView()
                         } else {
                             ForEach(model.processes) { process in
-                                ProcessRow(process: process)
+                                ProcessRow(process: process, configureRestart: { addProjectAction?($0) })
                             }
                         }
                     }
                 }
                 .padding(.vertical, 2)
             }
+            .frame(maxHeight: .infinity, alignment: .top)
 
             footer
 
@@ -71,8 +67,7 @@ struct MenuContentView: View {
 
     private var header: some View {
         HStack(spacing: 10) {
-            Text("Processes")
-                .font(.headline)
+            CountBadge(count: model.displayedProcessCount, unknownCount: model.unknownProcessCount)
 
             Spacer()
 
@@ -84,8 +79,6 @@ struct MenuContentView: View {
             .labelsHidden()
             .pickerStyle(.segmented)
             .fixedSize()
-
-            CountBadge(count: model.displayedProcessCount, unknownCount: model.unknownProcessCount)
         }
     }
 
@@ -93,7 +86,7 @@ struct MenuContentView: View {
         VStack(spacing: 6) {
             Divider()
             HStack(spacing: 12) {
-                Button { openWindow(id: "add-project") } label: { Label("Add Project", systemImage: "plus") }
+                Button { addProjectAction?(nil) } label: { Label("Add Project", systemImage: "plus") }
                 Button { model.refresh() } label: { Image(systemName: "arrow.clockwise") }
                     .help("Refresh")
                     .accessibilityLabel("Refresh")
@@ -264,6 +257,7 @@ private struct ActivityProcessRow: View {
 private struct ProcessRow: View {
     @EnvironmentObject private var model: AppModel
     let process: DevProcess
+    var configureRestart: (DevProcess) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -315,23 +309,25 @@ private struct ProcessRow: View {
 
     private var actionButtons: some View {
         HStack(spacing: 8) {
-            Menu {
-                Button("Open in Browser") { model.open(process) }
-                Button("Copy URL") { model.copyURL(process) }
-                Button("Reveal in Finder") { model.revealProjectFolder(process) }
-                    .disabled(process.cwd == nil)
-                Button("Restart") { model.restart(process) }
-                    .disabled(!process.canRestart)
-            } label: {
-                Image(systemName: "ellipsis")
+            Button { model.open(process) } label: { Image(systemName: "safari") }
+                .help("Open in Browser").accessibilityLabel("Open in Browser")
+            Button { model.copyURL(process) } label: { Image(systemName: "doc.on.doc") }
+                .help("Copy URL").accessibilityLabel("Copy URL")
+            Button { model.revealProjectFolder(process) } label: { Image(systemName: "folder") }
+                .disabled(process.cwd == nil)
+                .help("Reveal in Finder").accessibilityLabel("Reveal in Finder")
+            if process.canRestart {
+                Button { model.restart(process) } label: { Image(systemName: "arrow.clockwise") }
+                    .help("Restart").accessibilityLabel("Restart")
+            } else {
+                Button { configureRestart(process) } label: { Image(systemName: "gearshape") }
+                    .help("Set up restart command…").accessibilityLabel("Set up restart command")
             }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
-            .accessibilityLabel("Actions for \(process.name)")
             Button("Stop", role: .destructive) { model.stop(process) }
                 .disabled(!process.canStop)
                 .controlSize(.small)
         }
+        .controlSize(.small)
     }
 }
 
@@ -558,6 +554,17 @@ struct AddProjectView: View {
     @State private var selectedScript = ""
     @State private var folderState = "Choose a project folder"
 
+    init(process: DevProcess? = nil, onClose: @escaping () -> Void) {
+        self.onClose = onClose
+        if let process {
+            _name = State(initialValue: process.name)
+            _cwd = State(initialValue: process.cwd ?? "")
+            _port = State(initialValue: String(process.port))
+            _command = State(initialValue: "")
+            _folderState = State(initialValue: "Enter the command used to start this process.")
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
@@ -739,16 +746,6 @@ struct AddProjectView: View {
     }
 }
 
-struct AddProjectWindowView: View {
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        AddProjectView {
-            dismiss()
-        }
-    }
-}
-
 struct PreferencesView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
@@ -786,9 +783,7 @@ struct PreferencesView: View {
                             )
                             .labelsHidden()
                         }
-                    }
-
-                    SettingsBlock {
+                        Divider().padding(.vertical, 6)
                         VStack(alignment: .leading, spacing: 10) {
                             Text("Menu bar metric")
                                 .font(.system(size: 13, weight: .semibold))
@@ -885,9 +880,11 @@ struct PreferencesView: View {
                         Text("Projects")
                             .font(.system(size: 13, weight: .semibold))
                         Spacer()
-                        Text(verbatim: "\(model.projects.count)")
-                            .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(.secondary)
+                        if !model.projects.isEmpty {
+                            Text(verbatim: "\(model.projects.count)")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
                     }
 
                     VStack(spacing: 8) {
@@ -924,10 +921,10 @@ struct PreferencesView: View {
 
     private var updateStatusText: String {
         if let error = updater.error {
-            return error
+            return "Installed \(updater.currentVersion). \(error)"
         }
         if updater.isChecking {
-            return "Checking GitHub Releases..."
+            return "Installed \(updater.currentVersion). Checking GitHub Releases…"
         }
         if let latestVersion = updater.latestVersion {
             return "Installed \(updater.currentVersion), latest \(latestVersion)"
@@ -1005,8 +1002,10 @@ private struct SettingsBlock<Content: View>: View {
     @ViewBuilder var content: Content
 
     var body: some View {
-        content
-            .padding(.vertical, 6)
+        VStack(alignment: .leading, spacing: 10) { content }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(12)
+            .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
     }
 }
 

@@ -16,50 +16,27 @@ struct FittingScrollView<Content: View>: View {
 enum UtilityPanelSize {
     case processes, preferences, project
 
-    // Product reading-width budgets, not display dimensions. Native controls
-    // retain their minimum sizes; long process metadata may truncate.
-    // Beyond this reading budget the list scrolls, instead of consuming the display.
-    var maximumHeight: CGFloat { 640 }
-
-    var preferredWidth: CGFloat {
+    var minimumSize: CGSize {
         switch self {
-        case .processes: 600
-        case .preferences, .project: 620
+        case .processes: CGSize(width: 600, height: 220)
+        case .preferences, .project: CGSize(width: 460, height: 300)
+        }
+    }
+
+    var initialSize: CGSize {
+        switch self {
+        case .processes: CGSize(width: 680, height: 245)
+        case .preferences: CGSize(width: 600, height: 440)
+        case .project: CGSize(width: 620, height: 400)
         }
     }
 }
 
 extension View {
-    /// Menu-bar windows receive an ideal-size proposal, not a fixed viewport.
-    /// Bound that proposal by the display containing the invoking pointer.
-    func screenBoundedPanel(_ size: UtilityPanelSize) -> some View {
-        let screen = NSApp.keyWindow?.screen
-            ?? NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) }
-            ?? NSScreen.main
-        let width = min(size.preferredWidth, screen?.visibleFrame.width ?? size.preferredWidth)
-        return frame(idealWidth: width, maxWidth: width, maxHeight: min(size.maximumHeight, screen?.visibleFrame.height ?? size.maximumHeight))
-            .fixedSize()
-    }
-}
-
-/// Keep the MenuBarExtra host in sync when its conditional content shrinks.
-/// SwiftUI can update its ideal size without shrinking the existing panel.
-struct PanelWindowSize: NSViewRepresentable {
-    let size: CGSize
-
-    func makeNSView(context: Context) -> NSView { NSView() }
-
-    func updateNSView(_ view: NSView, context: Context) {
-        DispatchQueue.main.async { [weak view] in
-            guard let window = view?.window,
-                  self.size.width > 0, self.size.height > 0 else { return }
-            let oldFrame = window.frame
-            let contentSize = window.contentView?.bounds.size ?? .zero
-            guard abs(contentSize.width - self.size.width) > 0.5
-                    || abs(contentSize.height - self.size.height) > 0.5 else { return }
-            window.setContentSize(self.size)
-            window.setFrameOrigin(NSPoint(x: oldFrame.maxX - window.frame.width,
-                                          y: oldFrame.maxY - window.frame.height))
-        }
+    /// Content sets its operable minimum; the native window owns user resizing.
+    func screenBoundedPanel(_ role: UtilityPanelSize) -> some View {
+        frame(minWidth: role.minimumSize.width, idealWidth: role.initialSize.width,
+              maxWidth: .infinity, minHeight: role.minimumSize.height,
+              idealHeight: role.initialSize.height, maxHeight: .infinity, alignment: .top)
     }
 }

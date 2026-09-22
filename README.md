@@ -41,6 +41,7 @@ It is built for developers running Vite, Next.js, Astro, Nuxt, Node.js, npm, pnp
 - Saves runnable projects from a selected folder, detects npm, pnpm, yarn, or bun, and reads scripts from `package.json`.
 - Captures stdout and stderr for processes started by PortsKiller during the current app session.
 - Can launch at login and check, download, and install updates from GitHub Releases.
+- Opens a resizable native window from the menu bar and remembers its size. Process actions stay directly accessible on compact cards.
 
 <p align="center">
   <img src="assets/system-resources.png" alt="PortsKiller showing total CPU, physical RAM, and active swap usage" width="680">
@@ -65,9 +66,13 @@ When you add a project, PortsKiller reads its `package.json` and lockfile, sugge
 
 Stop actions are intentionally limited to eligible non-system processes. Simulator actions also validate the current process identity before terminating a process tree.
 
+Restart is available for saved projects and detected launch commands. When the command cannot be inferred, the setup button opens Add Project with the process folder and port filled in; enter its launch command to enable restart. Session recovery is currently disabled behind a feature flag.
+
+Preferences group general settings, software updates, and saved projects. Update dialogs show release notes from the release or its tagged changelog. Automatic checks and downloads are configurable; installation still asks for confirmation. Updates run only from `/Applications/PortsKiller.app`, verify the staged bundle identity, signature integrity, and version, then back up the current app and roll back if launch fails. Builds use ad-hoc signing, not Developer ID authentication or notarization.
+
 ## Install
 
-Download the current DMG or ZIP from [GitHub Releases](https://github.com/iddictive/PortsKiller/releases/latest), move PortsKiller to Applications, and launch it. The launch-at-login toggle is available when the app runs from a packaged `.app` bundle.
+Download the current DMG from [GitHub Releases](https://github.com/iddictive/PortsKiller/releases/latest), move PortsKiller to Applications, and launch it. The launch-at-login toggle is available when the app runs from a packaged `.app` bundle.
 
 PortsKiller requires macOS 13 or newer. The repository packaging script does not notarize builds, so macOS can ask you to confirm the first launch.
 
@@ -94,6 +99,8 @@ open -n .build/PortsKiller.app
 ```
 
 The packaging script creates `.build/PortsKiller.app` and `.build/PortsKiller-<version>.dmg` with an ad-hoc code signature.
+
+The release workflow builds and publishes a DMG on pushes to `main`, version tags, or manual dispatch. `scripts/version.sh` owns version selection: normal branch releases increment the minor version from the latest tag. Set `PORTSKILLER_VERSION` for an explicit local package version. See [CHANGELOG.md](CHANGELOG.md) for release changes.
 
 ## Command-line diagnostics
 
@@ -127,5 +134,7 @@ PortsKiller — нативное приложение для строки мен
 Проект добавляется через выбор папки: PortsKiller читает `package.json`, определяет npm, pnpm, yarn или bun и предлагает доступные scripts. Для процессов, запущенных самим приложением, доступны логи текущей сессии.
 
 В строке меню можно оставить CPU, RAM или только иконку. Физическая память и swap показываются отдельно, а небольшая точка появляется только при активном swap.
+
+Основное окно можно растягивать за края; размер сохраняется. Действия доступны прямо в карточке процесса. Если команда перезапуска неизвестна, кнопка настройки открывает добавление проекта. Автообновление установленной копии показывает изменения релиза, проверяет загруженное приложение и восстанавливает предыдущую версию при неудачном запуске. Session recovery отключён.
 
 Скачать готовую сборку: [GitHub Releases](https://github.com/iddictive/PortsKiller/releases/latest).
