@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import SwiftUI
 
 @main
@@ -78,6 +79,13 @@ struct MenuBarIcon: View {
         .fixedSize()
         .help(statusHelp)
         .accessibilityLabel(presentation.accessibilityLabel(hasWarning: hasWarning))
+        .contextMenu {
+            Button {
+                NSApplication.shared.terminate(nil)
+            } label: {
+                Label("Quit", systemImage: "power")
+            }
+        }
     }
 
     private var statusText: Text {
