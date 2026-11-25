@@ -1,10 +1,12 @@
 # Changelog
 
-## 0.5.1
+## 0.6.0
 
 - Moved the native window controls into the sidebar and removed the separate title strip.
 - Search hints remain distinct from typed text. Clicking outside Search dismisses focus without erasing the query or swallowing the click.
 - Status shows how long ago the app scanned. Pause keeps the last results visible; resume refreshes immediately.
+- Agents and Dev share quick actions for eligible processes: reveal in Finder, copy, inspect, and stop. Claude Code, Claude Desktop, and Codex are distinguished in activity.
+- Right-click the menu bar icon to search Apps or Processes, filter process types, and see RAM usage.
 
 ## 0.5.0
 
