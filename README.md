@@ -18,7 +18,7 @@
   <img alt="macOS 13 or newer" src="https://img.shields.io/badge/macOS-13%2B-333333">
 </p>
 
-PortsKiller brings local servers and process controls into one native window. Use **Dev** for likely development servers, **Ports** for the full TCP listener list, or **Activity** for resource-heavy processes, simulators, and emulators.
+PortsKiller brings local agent activity, servers, and process controls into one native window. Use **Agents** for commands observed under Codex on this Mac, **Dev** for likely development servers, **Ports** for the full TCP listener list, or **Activity** for resource-heavy processes, simulators, and emulators.
 
 <p align="center">
   <img src="assets/interface-menu.png" alt="PortsKiller showing local listeners with process controls" width="760">
@@ -28,13 +28,14 @@ PortsKiller brings local servers and process controls into one native window. Us
 
 1. Download the DMG from [Releases](https://github.com/iddictive/PortsKiller/releases/latest).
 2. Move PortsKiller to Applications and launch it.
-3. Open the menu bar app and select **Dev**, **Ports**, or **Activity**.
+3. Open PortsKiller from the menu bar. **Agents** shows local commands; use **Dev**, **Ports**, or **Activity** to inspect other processes.
 4. To save a runnable project, choose **Add Project**, select its folder, and choose its launch command.
 
 Requires macOS 13 or newer. Release builds are ad-hoc signed and are not notarized; macOS may require first-launch confirmation.
 
 ## What it does
 
+- **See local agent work.** Commands running under Codex are grouped separately from idle-capable runtimes and tool services. Search by executable, verified project name, or PID. No command arguments or chat content are read. This is not a list of chats, cloud tasks, or their on/off status.
 - **Find the listener.** Switch between development servers, all TCP listeners, and resource-heavy activity.
 - **Inspect the process.** See its port, PID, command, project folder, uptime, CPU, physical RAM, and swap.
 - **Act from the same window.** Open localhost, reveal the folder, stop an eligible process tree, or restart a saved project.
@@ -77,7 +78,7 @@ Create a runnable app bundle and versioned DMG:
 
 ```bash
 scripts/build-app.sh
-open -n .build/PortsKiller.app
+open .build/PortsKiller.app --args --show-agents
 ```
 
 The packaging script creates `.build/PortsKiller.app` and `.build/PortsKiller-<version>.dmg` with an ad-hoc code signature.
@@ -92,6 +93,7 @@ The packaged executable also supports focused scanner output without opening the
 .build/debug/PortsKiller --scan-once
 .build/debug/PortsKiller --scan-all
 .build/debug/PortsKiller --scan-activity
+.build/debug/PortsKiller --scan-agents
 .build/debug/PortsKiller --system-stats
 ```
 

@@ -6,31 +6,16 @@ name = "PortsKiller"
 script = ""
 
 [[actions]]
-name = "Build"
+name = "Open Installed PortsKiller"
+icon = "run"
+command = "open -a /Applications/PortsKiller.app --args --show-agents"
+
+[[actions]]
+name = "Build and Scan Agents"
 icon = "test"
-command = "swift build"
+command = "swift run PortsKiller --scan-agents"
 
 [[actions]]
 name = "Package App"
 icon = "tool"
 command = "scripts/build-app.sh"
-
-[[actions]]
-name = "Smoke Scan"
-icon = "test"
-command = ".build/debug/PortsKiller --scan-once"
-
-[[actions]]
-name = "Smoke Scan All"
-icon = "test"
-command = ".build/debug/PortsKiller --scan-all"
-
-[[actions]]
-name = "Recovery Status"
-icon = "test"
-command = ".build/debug/PortsKiller --recovery-status"
-
-[[actions]]
-name = "Run App"
-icon = "run"
-command = "scripts/build-app.sh && open -n .build/PortsKiller.app"

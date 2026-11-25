@@ -54,6 +54,11 @@ find "$APP_DIR" -print0 | xargs -0 xattr -c 2>/dev/null || true
 codesign --force --deep --sign - "$APP_DIR"
 codesign --verify --deep --strict "$APP_DIR"
 
+if [[ "${PORTSKILLER_APP_ONLY:-0}" == 1 ]]; then
+    echo "$APP_DIR"
+    exit
+fi
+
 DMG_ROOT="$(mktemp -d)"
 trap 'rm -rf "$DMG_ROOT"' EXIT
 ditto --norsrc --noextattr "$APP_DIR" "$DMG_ROOT/PortsKiller.app"

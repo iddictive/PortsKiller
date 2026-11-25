@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Agents shows commands observed on this Mac, separate from the Codex runtime and tool services.
+- The native window has searchable Agents, Dev, Ports, and Activity views, with explicit confirmation before stopping a process.
+
 ## 0.2.0
 
 - Resizable native windows preserve their size, with compact process cards, inline actions, and grouped preferences.

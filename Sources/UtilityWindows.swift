@@ -5,11 +5,16 @@ import SwiftUI
 @MainActor
 final class UtilityWindows: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let model = AppModel()
+    private let showAgentsAtLaunch: Bool
     private var statusItem: NSStatusItem?
     private var statusView: StatusLabel?
     private var subscription: AnyCancellable?
     private var mainWindow: NSWindow?
     private var projectWindow: NSWindow?
+
+    init(showAgentsAtLaunch: Bool = false) {
+        self.showAgentsAtLaunch = showAgentsAtLaunch
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -27,6 +32,7 @@ final class UtilityWindows: NSObject, NSApplicationDelegate, NSWindowDelegate {
         subscription = model.objectWillChange.sink { [weak self] in
             DispatchQueue.main.async { self?.updateStatus() }
         }
+        if showAgentsAtLaunch { showProcesses() }
     }
 
     private func updateStatus() {
@@ -46,7 +52,7 @@ final class UtilityWindows: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if mainWindow == nil {
             let content = MenuContentView(addProjectAction: { [weak self] process in self?.showProject(process) })
                 .environmentObject(model)
-            mainWindow = makeWindow("Processes", role: .processes, content: content)
+            mainWindow = makeWindow("PortsKiller", role: .processes, content: content)
         }
         reveal(mainWindow!)
     }

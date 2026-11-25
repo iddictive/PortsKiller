@@ -1,9 +1,15 @@
 import AppKit
 import SwiftUI
 
+// Select the native property wrapper explicitly: SDKs that also provide a
+// State macro can omit its plug-in from Command Line Tools installations.
+private typealias ViewState<Value> = SwiftUI.State<Value>
+
 struct MenuContentView: View {
     @EnvironmentObject private var model: AppModel
-    @State private var activePanel: MenuPanel?
+    @ViewState private var activePanel: MenuPanel?
+    @ViewState private var query = ""
+    @FocusState private var searchFocused: Bool
     var addProjectAction: ((DevProcess?) -> Void)? = nil
 
     var body: some View {
@@ -23,86 +29,263 @@ struct MenuContentView: View {
     }
 
     private var mainMenu: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            header
-
-            FittingScrollView {
-                VStack(spacing: 8) {
-                    if FeatureFlags.sessionRecovery { SessionRecoveryView() }
-
-                    if model.processViewMode == .activity {
-                        if model.activityProcesses.isEmpty {
-                            EmptyStateView()
-                        } else {
-                            ForEach(model.activityProcesses) { process in
-                                ActivityProcessRow(process: process)
-                            }
-                        }
-                    } else {
-                        if model.processes.isEmpty {
-                            EmptyStateView()
-                        } else {
-                            ForEach(model.processes) { process in
-                                ProcessRow(process: process, configureRestart: { addProjectAction?($0) })
-                            }
-                        }
-                    }
+        VStack(alignment: .leading, spacing: 0) {
+            toolbar
+            Divider()
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(workspaceTitle)
+                        .font(.system(.title2, design: .default, weight: .semibold))
+                        .accessibilityAddTraits(.isHeader)
+                    Spacer()
+                    filterField
                 }
-                .padding(.vertical, 2)
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        if FeatureFlags.sessionRecovery && model.processViewMode == .agents {
+                            SessionRecoveryView()
+                        }
+                        content
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
-            .frame(maxHeight: .infinity, alignment: .top)
-
-            footer
-
+            .padding(.horizontal, 18)
+            .padding(.vertical, 14)
             if let error = model.lastError {
-                Text(error)
+                Label(error, systemImage: "exclamationmark.triangle")
                     .font(.caption)
                     .foregroundStyle(.red)
-                    .lineLimit(2)
+                    .padding(.horizontal, 18)
+                    .padding(.bottom, 8)
             }
+            Divider()
+            HStack(spacing: 8) {
+                SystemResourceSummary(resources: model.systemResources)
+                Spacer(minLength: 0)
+                if model.processViewMode == .agents, let updated = model.agentActivityUpdatedAt {
+                    Text("Scanned \(updated.formatted(date: .omitted, time: .standard))")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .help("Time of the latest local process scan")
+                }
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 8)
         }
-        .padding(14)
+        .onChange(of: model.processViewMode) { _ in query = "" }
         .screenBoundedPanel(.processes)
     }
 
-    private var header: some View {
-        HStack(spacing: 10) {
-            CountBadge(count: model.displayedProcessCount, unknownCount: model.unknownProcessCount)
-
-            Spacer()
-
-            Picker("Process mode", selection: $model.processViewMode) {
-                ForEach(ProcessViewMode.allCases) { mode in
-                    Text(mode.title).tag(mode)
-                }
+    private var toolbar: some View {
+        HStack(spacing: 14) {
+            Picker("View", selection: $model.processViewMode) {
+                ForEach(ProcessViewMode.allCases) { mode in Text(mode.title).tag(mode) }
             }
             .labelsHidden()
             .pickerStyle(.segmented)
+            .frame(maxWidth: 330)
+            Spacer(minLength: 0)
+            Button { addProjectAction?(nil) } label: {
+                Label("Add Project", systemImage: "plus")
+            }
+            .controlSize(.small)
+            Button { model.refresh() } label: { Image(systemName: "arrow.clockwise") }
+                .buttonStyle(.borderless)
+                .keyboardShortcut("r", modifiers: .command)
+                .help("Refresh (⌘R)")
+                .accessibilityLabel("Refresh")
+            Menu {
+                Button("Find in this view") { searchFocused = true }
+                    .keyboardShortcut("f", modifiers: .command)
+                Button("Preferences…") { activePanel = .preferences }
+                    .keyboardShortcut(",", modifiers: .command)
+                Divider()
+                Button("Quit PortsKiller") { NSApp.terminate(nil) }
+            } label: { Image(systemName: "ellipsis.circle") }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
             .fixedSize()
+            .help("Preferences and app actions")
+            .accessibilityLabel("App actions")
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 11)
+    }
+
+    private var workspaceTitle: String {
+        switch model.processViewMode {
+        case .agents: "Agent activity"
+        case .dev: "Development servers"
+        case .all: "Listening ports"
+        case .activity: "Resource activity"
         }
     }
 
-    private var footer: some View {
-        VStack(spacing: 6) {
-            Divider()
-            HStack(spacing: 12) {
-                Button { addProjectAction?(nil) } label: { Label("Add Project", systemImage: "plus") }
-                Button { model.refresh() } label: { Image(systemName: "arrow.clockwise") }
-                    .help("Refresh")
-                    .accessibilityLabel("Refresh")
-                Spacer()
-                Button("Preferences") { activePanel = .preferences }
-                Button("Quit") { NSApplication.shared.terminate(nil) }
+    private var filterField: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField("Filter", text: $query)
+                .textFieldStyle(.plain)
+                .focused($searchFocused)
+                .accessibilityLabel("Filter this view")
+                .onExitCommand {
+                    if query.isEmpty { searchFocused = false } else { query = "" }
+                }
+            if !query.isEmpty {
+                Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("Clear filter")
             }
-            .controlSize(.small)
-            SystemResourceSummary(resources: model.systemResources)
         }
+        .font(.system(size: 12))
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .frame(width: 168)
+        .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+        .overlay {
+            RoundedRectangle(cornerRadius: 6)
+                .strokeBorder(searchFocused ? Color.accentColor : Color.secondary.opacity(0.25),
+                              lineWidth: searchFocused ? 1.5 : 0.5)
+                .allowsHitTesting(false)
+        }
+    }
+
+    private func matches(_ fields: [String]) -> Bool {
+        let tokens = query.split(whereSeparator: { $0.isWhitespace })
+        return tokens.allSatisfy { token in fields.contains { $0.localizedCaseInsensitiveContains(String(token)) } }
+    }
+
+    @ViewBuilder private var content: some View {
+        switch model.processViewMode {
+        case .agents:
+            agentList
+        case .activity:
+            let items = model.activityProcesses.filter { row in
+                matches([row.name, row.kind.title, row.detail, row.primaryPID.map { String($0) } ?? ""])
+            }
+            if items.isEmpty { emptyOrFiltered }
+            else { ForEach(items) { ActivityProcessRow(process: $0) } }
+        case .dev, .all:
+            let items = model.processes.filter { row in
+                matches([row.name, row.kind.title, row.framework, row.cwd ?? "", String(row.port), String(row.pid)])
+            }
+            if items.isEmpty { emptyOrFiltered }
+            else { ForEach(items) { ProcessRow(process: $0, configureRestart: { addProjectAction?($0) }) } }
+        }
+    }
+
+    @ViewBuilder private var agentList: some View {
+        let rows = model.agentActivities.filter { row in
+            matches([row.title, row.detail, row.kind.title, row.pid.map { String($0) } ?? ""])
+        }
+        let work = rows.filter { $0.kind == .work }
+        let services = rows.filter { $0.kind == .service || $0.kind == .host }
+        let unavailable = model.agentActivities.filter { $0.kind == .unavailable }
+        if !unavailable.isEmpty {
+            ForEach(unavailable) { AgentObservationRow(item: $0) }
+        }
+        if model.agentActivityUpdatedAt == nil && rows.isEmpty && unavailable.isEmpty {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Reading local processes…").font(.callout).foregroundStyle(.secondary)
+            }
+            .padding(.vertical, 12)
+        } else if !query.isEmpty && work.isEmpty && services.isEmpty && unavailable.isEmpty {
+            noMatches
+        } else if !work.isEmpty || !services.isEmpty || unavailable.isEmpty {
+            if !work.isEmpty || (query.isEmpty && unavailable.isEmpty) {
+                sectionLabel("Local work", count: work.count)
+                if work.isEmpty {
+                    Text("No local agent commands observed in this scan.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .padding(.vertical, 7)
+                } else {
+                    ForEach(work) { AgentObservationRow(item: $0) }
+                }
+            }
+            if !services.isEmpty {
+                sectionLabel("Hosts & services", count: services.count)
+                    .padding(.top, work.isEmpty && !query.isEmpty ? 0 : 12)
+                ForEach(services) { AgentObservationRow(item: $0) }
+            }
+        }
+    }
+
+    private func sectionLabel(_ title: String, count: Int) -> some View {
+        HStack(spacing: 6) {
+            Text(title).font(.subheadline.weight(.semibold))
+            Text(verbatim: "\(count)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isHeader)
+        .padding(.bottom, 4)
+    }
+
+    @ViewBuilder private var emptyOrFiltered: some View {
+        if query.isEmpty { EmptyStateView() } else { noMatches }
+    }
+
+    private var noMatches: some View {
+        HStack {
+            Text("No matches for this filter.").font(.callout).foregroundStyle(.secondary)
+            Spacer()
+            Button("Clear filter") { query = "" }.buttonStyle(.link)
+        }
+        .padding(.vertical, 12)
+    }
+}
+
+private struct AgentObservationRow: View {
+    let item: AgentActivity
+
+    private var symbol: String {
+        switch item.kind {
+        case .work: "terminal"
+        case .service: "gearshape.2"
+        case .host: "macwindow"
+        case .unavailable: "exclamationmark.circle"
+        }
+    }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 10) {
+            Image(systemName: symbol)
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(item.kind == .work ? Color.accentColor : Color.secondary)
+                .frame(width: 23)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(verbatim: item.title)
+                    .font(.body.weight(.medium))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(verbatim: item.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 8)
+            if let pid = item.pid {
+                Text(verbatim: "PID \(pid)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+        }
+        .modifier(ProcessRowSurface())
+        .accessibilityElement(children: .combine)
+        .accessibilityValue(item.kind.title)
+        .help(item.detail)
     }
 }
 
 private struct SessionRecoveryView: View {
     @EnvironmentObject private var model: AppModel
-    @State private var isExpanded = false
+    @ViewState private var isExpanded = false
 
     private var snapshot: SessionRecoverySnapshot { model.sessionRecoverySnapshot }
 
@@ -187,6 +370,7 @@ private struct EmptyStateView: View {
 
     private var emptyTitle: String {
         switch model.processViewMode {
+        case .agents: return "No local agent commands observed"
         case .dev: return "No dev servers found"
         case .all: return "No listeners found"
         case .activity: return "No heavy background processes"
@@ -195,6 +379,7 @@ private struct EmptyStateView: View {
 
     private var emptyDetail: String {
         switch model.processViewMode {
+        case .agents: return "Only activity on this Mac is shown."
         case .dev: return "Refresh or add a project to start one."
         case .all: return "Refresh to scan local TCP ports."
         case .activity: return "Simulators appear here even without an open port."
@@ -205,8 +390,10 @@ private struct EmptyStateView: View {
 private struct ProcessRowSurface: ViewModifier {
     func body(content: Content) -> some View {
         content
-            .padding(10)
-            .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+            .padding(.horizontal, 4)
+            .padding(.vertical, 9)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .overlay(alignment: .bottom) { Divider().allowsHitTesting(false) }
     }
 }
 
@@ -214,43 +401,37 @@ private struct ActivityProcessRow: View {
     @EnvironmentObject private var model: AppModel
     let process: ActivityProcess
 
+    @ViewState private var confirmingStop = false
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 12) {
-                HStack(spacing: 9) {
-                    StatusDot(cpuPercent: process.resources.cpuPercent)
-
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(process.name)
-                            .font(.system(size: 13, weight: .semibold))
-                            .lineLimit(1)
-
-                        HStack(spacing: 6) {
-                            ActivityKindBadge(kind: process.kind)
-                            Text(process.detail)
-                        }
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                    }
+        HStack(spacing: 10) {
+            StatusDot(cpuPercent: process.resources.cpuPercent)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(verbatim: process.name)
+                    .font(.body.weight(.medium))
+                    .lineLimit(1)
+                Text(verbatim: process.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer(minLength: 6)
+            ResourceMonitor(resources: process.resources, memoryLabel: "RSS")
+            if process.canStop {
+                Button { confirmingStop = true } label: {
+                    Image(systemName: "stop.circle")
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-                ResourceMonitor(resources: process.resources, memoryLabel: "RSS")
-
-                Spacer(minLength: 8)
-
-                if process.canStop {
-                    IconActionButton("Stop Simulator", systemImage: "stop.fill", role: .destructive) {
-                        model.stop(process)
-                    }
+                .buttonStyle(.borderless)
+                .help("Stop \(process.name)")
+                .accessibilityLabel("Stop \(process.name)")
+                .confirmationDialog("Stop \(process.name)?", isPresented: $confirmingStop) {
+                    Button("Stop", role: .destructive) { model.stop(process) }
+                    Button("Cancel", role: .cancel) {}
                 }
             }
-
-
         }
         .modifier(ProcessRowSurface())
-        .help(compactActivityCommand(process.command))
     }
 }
 
@@ -258,20 +439,54 @@ private struct ProcessRow: View {
     @EnvironmentObject private var model: AppModel
     let process: DevProcess
     var configureRestart: (DevProcess) -> Void
+    @ViewState private var confirmingStop = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 12) {
-                identity
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
+                StatusDot(cpuPercent: process.resources.cpuPercent)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(verbatim: process.name)
+                        .font(.body.weight(.medium))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    HStack(spacing: 7) {
+                        Button(process.urlString) { model.open(process) }
+                            .buttonStyle(.link)
+                            .help("Open in browser")
+                        Text(verbatim: "PID \(process.pid)")
+                            .foregroundStyle(.secondary)
+                    }
+                    .font(.caption.monospacedDigit())
+                    .lineLimit(1)
+                }
+                Spacer(minLength: 6)
                 ResourceMonitor(resources: process.resources)
-
-                Spacer(minLength: 8)
-
-                actionButtons
+                Menu {
+                    Button("Open in Browser") { model.open(process) }
+                    Button("Copy URL") { model.copyURL(process) }
+                    Button("Reveal in Finder") { model.revealProjectFolder(process) }
+                        .disabled(process.cwd == nil)
+                    Divider()
+                    if process.canRestart {
+                        Button("Restart") { model.restart(process) }
+                            .disabled(!process.canStop)
+                    } else {
+                        Button("Set up restart…") { configureRestart(process) }
+                    }
+                    Button("Stop…", role: .destructive) { confirmingStop = true }
+                        .disabled(!process.canStop)
+                } label: { Image(systemName: "ellipsis.circle") }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .accessibilityLabel("Actions for \(process.name) on port \(process.port)")
+                .help("Process actions")
+                .confirmationDialog("Stop \(process.name) on port \(process.port)?", isPresented: $confirmingStop) {
+                    Button("Stop Process", role: .destructive) { model.stop(process) }
+                    Button("Cancel", role: .cancel) {}
+                }
             }
-
             if let projectID = process.projectID {
                 DisclosureGroup {
                     LogView(text: model.runner.logs(for: projectID))
@@ -281,53 +496,10 @@ private struct ProcessRow: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                .padding(.leading, 18)
             }
         }
         .modifier(ProcessRowSurface())
-    }
-
-    private var identity: some View {
-        HStack(spacing: 9) {
-            StatusDot(cpuPercent: process.resources.cpuPercent)
-
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Text(process.name)
-                        .font(.system(size: 13, weight: .semibold))
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
-
-                Button(process.urlString) { model.open(process) }
-                    .buttonStyle(.link)
-                    .font(.caption)
-                    .lineLimit(1)
-                    .help("\(process.framework) · PID \(process.pid)\n\(process.command)")
-            }
-        }
-    }
-
-    private var actionButtons: some View {
-        HStack(spacing: 8) {
-            Button { model.open(process) } label: { Image(systemName: "safari") }
-                .help("Open in Browser").accessibilityLabel("Open in Browser")
-            Button { model.copyURL(process) } label: { Image(systemName: "doc.on.doc") }
-                .help("Copy URL").accessibilityLabel("Copy URL")
-            Button { model.revealProjectFolder(process) } label: { Image(systemName: "folder") }
-                .disabled(process.cwd == nil)
-                .help("Reveal in Finder").accessibilityLabel("Reveal in Finder")
-            if process.canRestart {
-                Button { model.restart(process) } label: { Image(systemName: "arrow.clockwise") }
-                    .help("Restart").accessibilityLabel("Restart")
-            } else {
-                Button { configureRestart(process) } label: { Image(systemName: "gearshape") }
-                    .help("Set up restart command…").accessibilityLabel("Set up restart command")
-            }
-            Button("Stop", role: .destructive) { model.stop(process) }
-                .disabled(!process.canStop)
-                .controlSize(.small)
-        }
-        .controlSize(.small)
     }
 }
 
@@ -377,54 +549,7 @@ private struct StatusDot: View {
     private var color: Color {
         if cpuPercent >= 80 { return .red }
         if cpuPercent >= 35 { return .orange }
-        return .green
-    }
-}
-
-private struct KindBadge: View {
-    let kind: ProcessKind
-
-    var body: some View {
-        Text(kind.title)
-            .font(.system(size: 9, weight: .semibold))
-            .padding(.horizontal, 5)
-            .padding(.vertical, 1)
-            .foregroundStyle(color)
-            .background(color.opacity(0.12), in: Capsule())
-    }
-
-    private var color: Color {
-        switch kind {
-        case .dev: return .green
-        case .jsTool: return .blue
-        case .localService: return .orange
-        case .desktopApp: return .secondary
-        case .system: return .secondary
-        case .unknown: return .red
-        }
-    }
-}
-
-private struct ActivityKindBadge: View {
-    let kind: ActivityProcessKind
-
-    var body: some View {
-        Text(kind.title)
-            .font(.system(size: 9, weight: .semibold))
-            .padding(.horizontal, 5)
-            .padding(.vertical, 1)
-            .foregroundStyle(color)
-            .background(color.opacity(0.12), in: Capsule())
-    }
-
-    private var color: Color {
-        switch kind {
-        case .simulator: return .purple
-        case .application: return .blue
-        case .developerTool: return .orange
-        case .system: return .secondary
-        case .other: return .primary
-        }
+        return .secondary
     }
 }
 
@@ -453,37 +578,12 @@ private struct IconActionButton: View {
         Button(role: role, action: action) {
             Label(title, systemImage: systemImage)
         }
+        .labelStyle(.iconOnly)
+        .buttonStyle(.borderless)
         .controlSize(.small)
         .disabled(disabled)
         .help(title)
-    }
-}
-
-private struct CountBadge: View {
-    let count: Int
-    let unknownCount: Int
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(dotColor)
-                .frame(width: 7, height: 7)
-            Text("\(count) active")
-                .font(.system(size: 12, weight: .semibold))
-                .monospacedDigit()
-            if unknownCount > 0 {
-                Text(verbatim: "\(unknownCount)?")
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .foregroundStyle(.red)
-            }
-        }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 5)
-    }
-
-    private var dotColor: Color {
-        if unknownCount > 0 { return .red }
-        return count == 0 ? .secondary : .green
+        .accessibilityLabel(title)
     }
 }
 
@@ -508,8 +608,6 @@ private struct SystemResourceSummary: View {
         .font(.system(size: 10, weight: .semibold, design: .monospaced))
         .monospacedDigit()
         .foregroundStyle(.secondary)
-        .padding(.horizontal, 9)
-        .padding(.vertical, 5)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("System CPU \(cpuText), physical memory \(memoryDetail), \(swapDetail)")
     }
@@ -545,14 +643,14 @@ struct AddProjectView: View {
 
     private let inspector = PackageScriptInspector()
 
-    @State private var name = ""
-    @State private var cwd = ""
-    @State private var command = "pnpm dev"
-    @State private var port = "3000"
-    @State private var packageManager = "npm"
-    @State private var scripts: [PackageScript] = []
-    @State private var selectedScript = ""
-    @State private var folderState = "Choose a project folder"
+    @ViewState private var name = ""
+    @ViewState private var cwd = ""
+    @ViewState private var command = "pnpm dev"
+    @ViewState private var port = "3000"
+    @ViewState private var packageManager = "npm"
+    @ViewState private var scripts: [PackageScript] = []
+    @ViewState private var selectedScript = ""
+    @ViewState private var folderState = "Choose a project folder"
 
     init(process: DevProcess? = nil, onClose: @escaping () -> Void) {
         self.onClose = onClose
@@ -1066,9 +1164,15 @@ struct LogView: View {
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
-                Text(verbatim: "\(text.count) chars")
-                    .font(.system(size: 10, weight: .medium, design: .monospaced))
-                    .foregroundStyle(.tertiary)
+                if !text.isEmpty {
+                    Button("Copy") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(text, forType: .string)
+                    }
+                    .buttonStyle(.link)
+                    .font(.caption)
+                    .accessibilityLabel("Copy launch log")
+                }
             }
 
             Text(text.isEmpty ? "No logs for this launch yet." : text)
@@ -1083,23 +1187,6 @@ struct LogView: View {
 
 private func sheetHeader(_ title: String, systemImage: String) -> some View {
     Text(title).font(.headline)
-}
-
-private func compactCommand(_ command: String) -> String {
-    command
-        .replacingOccurrences(of: "next-server ", with: "")
-        .trimmingCharacters(in: .whitespacesAndNewlines)
-}
-
-private func visibleCommand(_ command: String) -> String? {
-    let compact = compactCommand(command)
-    guard !compact.isEmpty else { return nil }
-    if compact.hasPrefix("(") && compact.hasSuffix(")") { return nil }
-    return compact
-}
-
-private func compactActivityCommand(_ command: String) -> String {
-    command.replacingOccurrences(of: NSHomeDirectory(), with: "~")
 }
 
 private func byteString(_ bytes: UInt64) -> String {

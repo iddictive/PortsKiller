@@ -22,10 +22,13 @@ final class AppModel: ObservableObject {
     private enum ScanResult: Sendable {
         case listeners([DevProcess])
         case activity([ActivityProcess])
+        case agents([AgentActivity])
     }
 
     @Published var processes: [DevProcess] = []
     @Published var activityProcesses: [ActivityProcess] = []
+    @Published private(set) var agentActivities: [AgentActivity] = []
+    @Published private(set) var agentActivityUpdatedAt: Date?
     @Published var systemResources: SystemResourceUsage = .unavailable
     @Published var projects: [ManualProject] = []
     @Published var selectedLogProjectID: UUID?
@@ -36,7 +39,7 @@ final class AppModel: ObservableObject {
     @Published var menuBarMetric: MenuBarMetric = .cpu {
         didSet { menuBarMetricPreferences.save(menuBarMetric) }
     }
-    @Published var processViewMode: ProcessViewMode = .dev {
+    @Published var processViewMode: ProcessViewMode = .agents {
         didSet { refresh() }
     }
 
@@ -101,6 +104,8 @@ final class AppModel: ObservableObject {
             let result = await Task.detached(priority: .utility) {
                 let scanner = ProcessScanner()
                 return switch mode {
+                case .agents:
+                    ScanResult.agents(AgentActivityScanner().scan())
                 case .activity:
                     ScanResult.activity(scanner.scanActivity())
                 case .dev, .all:
@@ -115,6 +120,9 @@ final class AppModel: ObservableObject {
                mode == self.processViewMode,
                capturedProjects == self.projects {
                 switch result {
+                case let .agents(rows):
+                    if self.agentActivities != rows { self.agentActivities = rows }
+                    self.agentActivityUpdatedAt = Date()
                 case let .listeners(processes):
                     if self.processes != processes {
                         self.processes = processes
@@ -139,12 +147,16 @@ final class AppModel: ObservableObject {
     }
 
     var unknownProcessCount: Int {
-        guard processViewMode != .activity else { return 0 }
+        guard processViewMode == .all else { return 0 }
         return processes.filter { $0.kind == .unknown }.count
     }
 
     var displayedProcessCount: Int {
-        processViewMode == .activity ? activityProcesses.count : processes.count
+        switch processViewMode {
+        case .agents: agentActivities.filter { $0.kind == .work }.count
+        case .activity: activityProcesses.count
+        case .dev, .all: processes.count
+        }
     }
 
     func addProject(_ project: ManualProject) {

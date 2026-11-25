@@ -18,14 +18,14 @@ enum UtilityPanelSize {
 
     var minimumSize: CGSize {
         switch self {
-        case .processes: CGSize(width: 600, height: 220)
+        case .processes: CGSize(width: 620, height: 310)
         case .preferences, .project: CGSize(width: 460, height: 300)
         }
     }
 
     var initialSize: CGSize {
         switch self {
-        case .processes: CGSize(width: 680, height: 245)
+        case .processes: CGSize(width: 740, height: 480)
         case .preferences: CGSize(width: 600, height: 440)
         case .project: CGSize(width: 620, height: 400)
         }

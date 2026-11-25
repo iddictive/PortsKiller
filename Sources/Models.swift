@@ -36,6 +36,7 @@ struct DevProcess: Identifiable, Hashable, Sendable {
 }
 
 enum ProcessViewMode: String, CaseIterable, Identifiable, Sendable {
+    case agents
     case dev
     case all
     case activity
@@ -44,6 +45,7 @@ enum ProcessViewMode: String, CaseIterable, Identifiable, Sendable {
 
     var title: String {
         switch self {
+        case .agents: return "Agents"
         case .dev: return "Dev"
         case .all: return "Ports"
         case .activity: return "Activity"

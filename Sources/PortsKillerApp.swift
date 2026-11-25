@@ -17,6 +17,14 @@ enum PortsKillerMain {
             exit(0)
         }
 
+        if CommandLine.arguments.contains("--scan-agents") {
+            for item in AgentActivityScanner().scan() {
+                let pid = item.pid.map(String.init) ?? "-"
+                print("\(item.kind.title)\t\(item.title)\tpid=\(pid)\t\(item.detail)")
+            }
+            exit(0)
+        }
+
         if CommandLine.arguments.contains("--scan-activity") {
             for process in ProcessScanner().scanActivity() {
                 let memory = String(format: "%.0fM", process.resources.memoryMegabytes)
@@ -55,7 +63,7 @@ enum PortsKillerMain {
         }
 
         let application = NSApplication.shared
-        let windows = UtilityWindows()
+        let windows = UtilityWindows(showAgentsAtLaunch: CommandLine.arguments.contains("--show-agents"))
         application.delegate = windows
         withExtendedLifetime(windows) { application.run() }
     }
