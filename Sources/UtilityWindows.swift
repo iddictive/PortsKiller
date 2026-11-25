@@ -223,12 +223,13 @@ final class UtilityWindows: NSObject, NSApplicationDelegate, NSWindowDelegate, N
         window.delegate = self
         let host = NSHostingView(rootView: content)
         if role == .processes {
-            // Let the same glass extend behind the real traffic lights and
-            // title. Keep all application controls below the native titlebar.
+            // Keep AppKit's controls, title (for accessibility) and drag behavior.
+            // Only the rail reserves space for the controls, not the whole window.
             window.styleMask.insert(.fullSizeContentView)
             window.isOpaque = false
             window.backgroundColor = .clear
-            window.titleVisibility = .visible
+            window.titleVisibility = .hidden
+            window.titlebarSeparatorStyle = .none
             window.titlebarAppearsTransparent = true
             let material = NSVisualEffectView(frame: NSRect(origin: .zero, size: role.initialSize))
             material.blendingMode = .behindWindow
@@ -241,9 +242,8 @@ final class UtilityWindows: NSObject, NSApplicationDelegate, NSWindowDelegate, N
             material.addSubview(veil)
             material.addSubview(host)
             host.translatesAutoresizingMaskIntoConstraints = false
-            let top = (window.contentLayoutGuide as? NSLayoutGuide)?.topAnchor ?? material.safeAreaLayoutGuide.topAnchor
             NSLayoutConstraint.activate([
-                host.topAnchor.constraint(equalTo: top),
+                host.topAnchor.constraint(equalTo: material.topAnchor),
                 host.leadingAnchor.constraint(equalTo: material.leadingAnchor),
                 host.trailingAnchor.constraint(equalTo: material.trailingAnchor),
                 host.bottomAnchor.constraint(equalTo: material.bottomAnchor),
@@ -291,6 +291,7 @@ private struct WindowMaterialVeil: View {
     var body: some View {
         WorkspaceStyle.canvas(solid: reduceTransparency || contrast == .increased)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .ignoresSafeArea()
             .accessibilityHidden(true)
     }
 }

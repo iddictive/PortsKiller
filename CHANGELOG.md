@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.1
+
+- Moved the native window controls into the sidebar and removed the separate title strip.
+- Search hints remain distinct from typed text. Clicking outside Search dismisses focus without erasing the query or swallowing the click.
+- Status shows how long ago the app scanned. Pause keeps the last results visible; resume refreshes immediately.
+
 ## 0.5.0
 
 - Right-click the menu bar icon to search running apps and ask them to quit normally. Left-click opens the process window.

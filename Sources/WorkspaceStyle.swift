@@ -13,8 +13,6 @@ enum WorkspaceStyle {
     // Reserve opaque paint for Accessibility's transparency/contrast settings.
     static func canvas(solid: Bool) -> Color { solid ? windowBase : windowBase.opacity(0.44) }
 
-    static let railBacking = Color(nsColor: .controlBackgroundColor)
-    static let railEdge = Color.primary.opacity(0.11)
     static let hairline = Color.primary.opacity(0.12)
     static let group = Color.primary.opacity(0.065)
     static let control = Color.primary.opacity(0.085)
@@ -28,27 +26,13 @@ enum WorkspaceStyle {
     static let gutter: CGFloat = 20
     static let controlRadius: CGFloat = 8
     static let groupRadius: CGFloat = 12
-    static let railRadius: CGFloat = 15
 }
 
 struct WorkspaceRail: ViewModifier {
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    @Environment(\.colorSchemeContrast) private var contrast
-
     func body(content: Content) -> some View {
-        content.background {
-            let shape = RoundedRectangle(cornerRadius: WorkspaceStyle.railRadius)
-            if reduceTransparency || contrast == .increased {
-                shape.fill(WorkspaceStyle.railBacking)
-            } else {
-                shape.fill(.ultraThinMaterial)
-            }
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: WorkspaceStyle.railRadius)
-                .strokeBorder(WorkspaceStyle.railEdge, lineWidth: 0.5)
-                .allowsHitTesting(false)
-        }
+        // One material behind both columns and the traffic lights. A quiet tint
+        // marks navigation; don't stack a second sheet of glass inside the rail.
+        content.background(Color.primary.opacity(0.035))
     }
 }
 
@@ -113,6 +97,7 @@ struct WorkspaceFilterField: View {
     let identifier: String
     let height: CGFloat
     var clearsOnEscape = false
+    @Environment(\.colorSchemeContrast) private var contrast
 
     var body: some View {
         HStack(spacing: 4) {
@@ -127,41 +112,91 @@ struct WorkspaceFilterField: View {
             } else {
                 input
             }
-            Button {
-                query = ""
-                focus.wrappedValue = true
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 11, weight: .medium))
-                    .frame(width: 17, height: 26)
-                    .contentShape(Rectangle())
+            if !query.isEmpty {
+                Button {
+                    query = ""
+                    focus.wrappedValue = true
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 11, weight: .medium))
+                        .frame(width: 17, height: 26)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Clear filter")
             }
-            .buttonStyle(.borderless)
-            .opacity(query.isEmpty ? 0 : 1)
-            .disabled(query.isEmpty)
-            .accessibilityHidden(query.isEmpty)
-            .accessibilityLabel("Clear filter")
         }
         .font(.system(size: 12))
         .foregroundStyle(WorkspaceStyle.ink)
         .padding(.horizontal, 8)
         .frame(height: height)
-        .background(WorkspaceStyle.control, in: RoundedRectangle(cornerRadius: WorkspaceStyle.controlRadius))
+        .background(Color(nsColor: .textBackgroundColor).opacity(0.52), in: RoundedRectangle(cornerRadius: WorkspaceStyle.controlRadius))
         .overlay {
             RoundedRectangle(cornerRadius: WorkspaceStyle.controlRadius)
                 .strokeBorder(focus.wrappedValue ? Color(nsColor: .keyboardFocusIndicatorColor) : .clear, lineWidth: 1)
                 .allowsHitTesting(false)
         }
+        .background(SearchClickAway(editing: focus.wrappedValue))
     }
 
     private var input: some View {
-        // The placeholder is the field’s only visible label, not secondary metadata.
-        TextField(label, text: $query, prompt: Text(prompt).foregroundColor(WorkspaceStyle.ink))
+        // AppKit can dim a native placeholder on glass even with a colored
+        // attributed prompt. Keep a single native editor for input/VoiceOver,
+        // but give the empty label a deliberate level between entered text
+        // and the system's disabled placeholder.
+        TextField(label, text: $query, prompt: Text(""))
             .textFieldStyle(.plain)
+            .font(.system(size: 13))
             .foregroundStyle(WorkspaceStyle.ink)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .overlay(alignment: .leading) {
+                if query.isEmpty {
+                    Text(verbatim: prompt)
+                        .font(.system(size: 13))
+                        .foregroundStyle(WorkspaceStyle.ink.opacity(contrast == .increased ? 0.90 : 0.76))
+                        .lineLimit(1)
+                        .padding(.leading, 2)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
+            }
             .focused(focus)
             .accessibilityLabel(label)
+            .accessibilityHint(Text(verbatim: prompt))
             .accessibilityIdentifier(identifier)
+    }
+}
+
+// Observe, never intercept: outside clicks end editing before the same event
+// goes to its original button, row, scroll area, or native window drag region.
+private struct SearchClickAway: NSViewRepresentable {
+    let editing: Bool
+    func makeNSView(context: Context) -> Observer { Observer() }
+    func updateNSView(_ view: Observer, context: Context) { view.editing = editing }
+    static func dismantleNSView(_ view: Observer, coordinator: ()) { view.editing = false }
+
+    final class Observer: NSView {
+        var editing = false { didSet { syncMonitor() } }
+        private var monitor: Any?
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            syncMonitor()
+        }
+        private func syncMonitor() {
+            guard editing, window != nil else {
+                if let monitor { NSEvent.removeMonitor(monitor); self.monitor = nil }
+                return
+            }
+            guard monitor == nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+                guard let self, let window = self.window, event.window === window,
+                      !self.bounds.contains(self.convert(event.locationInWindow, from: nil)),
+                      let editor = window.firstResponder as? NSTextView, editor.isFieldEditor else { return event }
+                window.makeFirstResponder(nil)
+                return event
+            }
+        }
     }
 }
 

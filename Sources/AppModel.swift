@@ -48,8 +48,9 @@ final class AppModel: ObservableObject {
     @Published var menuBarMetric: MenuBarMetric = .cpu {
         didSet { menuBarMetricPreferences.save(menuBarMetric) }
     }
+    @Published private(set) var isWorkspaceScanPaused = false
     @Published var processViewMode: ProcessViewMode = .agents {
-        didSet { if processViewMode != oldValue { refresh() } }
+        didSet { if processViewMode != oldValue { refreshAutomatically() } }
     }
 
     var quickActivityActionMessage: String? { activityActionMessage }
@@ -114,11 +115,35 @@ final class AppModel: ObservableObject {
         refreshSystemResources()
         refresh()
         GitHubUpdater.shared.checkForUpdates()
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: 4, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refresh() }
-        }
+        startAutomaticRefreshTimer()
         resourceTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refreshSystemResources() }
+        }
+    }
+
+    private func startAutomaticRefreshTimer() {
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: 4, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.refreshAutomatically() }
+        }
+    }
+
+    private func refreshAutomatically() {
+        guard !isWorkspaceScanPaused else { return }
+        refresh()
+    }
+
+    func toggleWorkspaceScanPause() {
+        isWorkspaceScanPaused.toggle()
+        if isWorkspaceScanPaused {
+            refreshTimer?.invalidate()
+            refreshTimer = nil
+            // A scan already running on the utility thread can finish, but it
+            // must not change the paused snapshot or start a queued rerun.
+            refreshGeneration &+= 1
+            refreshPending = false
+        } else {
+            startAutomaticRefreshTimer()
+            refresh()
         }
     }
 

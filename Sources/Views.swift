@@ -69,6 +69,7 @@ struct MenuContentView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
+        .ignoresSafeArea(.container, edges: .top)
         .foregroundStyle(WorkspaceStyle.ink)
         .alert("Interrupt this command?", isPresented: $confirmingInterrupt, presenting: interruptTarget) { item in
             Button("Cancel", role: .cancel) {}
@@ -89,11 +90,24 @@ struct MenuContentView: View {
                model.agentActivities.contains(where: { $0.kind == .unavailable }) {
                 Text("Scan unavailable")
             } else if let completed = model.activeScanCompletedAt {
-                Text("Scanned \(completed.formatted(date: .omitted, time: .standard))")
-                    .help("Latest scan for this view on this Mac")
+                TimelineView(.periodic(from: completed, by: 1)) { context in
+                    let seconds = Int(max(0, context.date.timeIntervalSince(completed)))
+                    Text(seconds < 60 ? "\(seconds)s ago" : "\(seconds / 60)m ago")
+                }
+                .help("Time since the last scan for this view")
+                .accessibilityIdentifier("workspace.scan-age")
             } else {
-                Text("This Mac")
+                Text("Not yet scanned")
             }
+            Button { model.toggleWorkspaceScanPause() } label: {
+                Image(systemName: model.isWorkspaceScanPaused ? "play.fill" : "pause.fill")
+                    .font(.system(size: 10, weight: .semibold))
+                    .frame(width: 24, height: 22)
+            }
+            .buttonStyle(WorkspaceButton(selected: model.isWorkspaceScanPaused))
+            .accessibilityLabel(model.isWorkspaceScanPaused ? "Resume auto-scan" : "Pause auto-scan")
+            .accessibilityIdentifier("workspace.scan-toggle")
+            .help(model.isWorkspaceScanPaused ? "Resume auto-scan" : "Pause auto-scan")
         }
         .font(.caption.monospacedDigit())
         .foregroundStyle(WorkspaceStyle.mutedInk)
@@ -138,12 +152,13 @@ struct MenuContentView: View {
             .accessibilityIdentifier("workspace.settings")
             .keyboardShortcut(",", modifiers: .command)
         }
-        .padding(7)
-        .frame(width: 142)
+        .padding(.horizontal, 9)
+        .padding(.bottom, 10)
+        // The standard window buttons remain in their native AppKit positions.
+        .padding(.top, 36)
+        .frame(width: 152)
         .frame(maxHeight: .infinity)
         .modifier(WorkspaceRail())
-        .padding(.leading, 10)
-        .padding(.vertical, 10)
     }
 
     private func navLabel(_ title: String, symbol: String, shortcut: String? = nil) -> some View {
@@ -215,7 +230,8 @@ struct MenuContentView: View {
             focus: $searchFocused, prompt: scope.prompt, label: scope.label,
             identifier: "workspace.filter", height: 34, clearsOnEscape: true
         )
-        .frame(width: showAgentPIDColumn ? 178 : 135)
+        // A list column appearing/disappearing must not shift header controls.
+        .frame(width: 150)
         .background {
             Button("") { searchFocused = true }
                 .keyboardShortcut("f", modifiers: .command)
@@ -272,10 +288,13 @@ struct MenuContentView: View {
         }
         if model.activeScanCompletedAt == nil {
             HStack(spacing: 8) {
-                ProgressView()
-                    .controlSize(.small)
-                    .accessibilityHidden(true)
-                Text("Scanning this Mac…").font(.callout)
+                if !model.isWorkspaceScanPaused {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityHidden(true)
+                }
+                Text(model.isWorkspaceScanPaused ? "Auto-scan paused" : "Scanning this Mac…")
+                    .font(.callout)
             }
             .foregroundStyle(WorkspaceStyle.mutedInk)
             .padding(.vertical, 12)
