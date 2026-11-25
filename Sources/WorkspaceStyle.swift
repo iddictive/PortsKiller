@@ -113,6 +113,7 @@ struct WorkspaceFilterField: View {
     let identifier: String
     let height: CGFloat
     var clearsOnEscape = false
+    var prominentPrompt = false
 
     var body: some View {
         HStack(spacing: 4) {
@@ -155,10 +156,26 @@ struct WorkspaceFilterField: View {
     }
 
     private var input: some View {
-        TextField(label, text: $query, prompt: Text(prompt).foregroundColor(WorkspaceStyle.mutedInk))
+        TextField(label, text: $query, prompt: Text(prompt).foregroundColor(prominentPrompt ? WorkspaceStyle.ink : WorkspaceStyle.mutedInk))
             .textFieldStyle(.plain)
             .focused(focus)
             .accessibilityLabel(label)
             .accessibilityIdentifier(identifier)
+    }
+}
+
+extension View {
+    @ViewBuilder func workspaceScrollEdges() -> some View {
+        // This scroll view is already bounded by the fixed header and footer.
+        // Don't also fade the first and last rows under a native toolbar mask.
+        #if compiler(>=6.2)
+        if #available(macOS 26, *) {
+            self.scrollEdgeEffectHidden(true, for: .vertical)
+        } else {
+            self
+        }
+        #else
+        self
+        #endif
     }
 }

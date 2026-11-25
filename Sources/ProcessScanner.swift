@@ -122,7 +122,7 @@ final class ProcessScanner {
         }
     }
 
-    func scanActivity(limit: Int = 18) -> [ActivityProcess] {
+    func scanActivity(limit: Int = 18, includingIdle: Bool = false) -> [ActivityProcess] {
         let observedBefore = Date()
         let snapshots = processSnapshots()
         guard !snapshots.isEmpty, limit > 0 else { return [] }
@@ -176,34 +176,42 @@ final class ProcessScanner {
         }
 
         let currentPID = Int32(ProcessInfo.processInfo.processIdentifier)
-        let heavyEntries = snapshots.values
+        let processEntries = snapshots.values
             .filter { snapshot in
                 snapshot.pid > 1
                     && snapshot.pid != currentPID
                     && !simulatorPIDs.contains(snapshot.pid)
-                    && (snapshot.resources.cpuPercent >= activityMinimumCPU
+                    && (includingIdle || snapshot.resources.cpuPercent >= activityMinimumCPU
                         || snapshot.resources.memoryBytes >= activityMinimumMemory)
             }
             .map { snapshot in
-                let kind = activityKind(for: snapshot)
+                let executable = includingIdle ? Self.localExecutable(pid: snapshot.pid) : nil
+                let kind = activityKind(for: snapshot, executable: executable)
+                let allowsStop = includingIdle && (kind == .developerTool || kind == .other)
+                    && snapshot.ownerUID == getuid() && executable.map { Self.isActivityActionable(executable: $0, pid: snapshot.pid) } == true
+                let identity = allowsStop ? Self.verifiedIdentity(for: snapshot, observedBefore: observedBefore) : nil
                 return ActivityProcess(
                     id: "process:\(snapshot.pid)",
-                    name: activityDisplayName(for: snapshot),
+                    name: activityDisplayName(for: snapshot, executable: executable),
                     detail: "PID \(snapshot.pid)",
                     command: snapshot.command,
                     kind: kind,
                     resources: snapshot.resources,
                     processCount: 1,
                     targetPIDs: [snapshot.pid],
-                    identity: nil,
-                    canStop: false
+                    identity: identity,
+                    canStop: identity != nil
                 )
             }
             .sorted(by: resourceSort)
 
+        if includingIdle {
+            return (simulatorEntries + processEntries).sorted(by: resourceSort)
+        }
+
         let reservedSimulatorCount = min(simulatorEntries.count, min(6, limit))
         let selected = Array(simulatorEntries.sorted(by: resourceSort).prefix(reservedSimulatorCount))
-            + Array(heavyEntries.prefix(limit - reservedSimulatorCount))
+            + Array(processEntries.prefix(limit - reservedSimulatorCount))
         return selected.sorted(by: resourceSort)
     }
 
@@ -214,15 +222,37 @@ final class ProcessScanner {
         return Set(listeners.filter { $0.port == port }.map(\.pid))
     }
 
-    static func permitsLocalAction(pid: Int32) -> Bool {
-        guard pid > 1, pid != getpid() else { return false }
+    private static func localExecutable(pid: Int32) -> String? {
+        guard pid > 1, pid != getpid() else { return nil }
         var path = [UInt8](repeating: 0, count: Int(MAXPATHLEN) * 4)
         let size = UInt32(path.count)
-        guard path.withUnsafeMutableBytes({ proc_pidpath(pid, $0.baseAddress, size) }) > 0 else { return false }
-        let executable = String(decoding: path.prefix(while: { $0 != 0 }), as: UTF8.self)
+        guard path.withUnsafeMutableBytes({ proc_pidpath(pid, $0.baseAddress, size) }) > 0 else { return nil }
+        return String(decoding: path.prefix(while: { $0 != 0 }), as: UTF8.self)
+    }
+
+    static func permitsLocalAction(pid: Int32) -> Bool {
+        guard let executable = localExecutable(pid: pid) else { return false }
         let sample = AgentActivityScanner.Sample(pid: pid, parent: 0, executable: executable, cpu: nil)
-        return !sample.isCodex && !sample.isInspector && sample.service == nil
+        return !AgentActivityScanner.isProtectedRuntime(sample)
             && !executable.hasPrefix("/System/Library/")
+    }
+
+    static func permitsActivityAction(pid: Int32) -> Bool {
+        guard let executable = localExecutable(pid: pid) else { return false }
+        return isActivityActionable(executable: executable, pid: pid)
+    }
+
+    private static func isActivityActionable(executable: String, pid: Int32) -> Bool {
+        let sample = AgentActivityScanner.Sample(pid: pid, parent: 0, executable: executable, cpu: nil)
+        let path = executable.lowercased()
+        let name = URL(fileURLWithPath: path).lastPathComponent
+        let protectedNames: Set<String> = [
+            "bash", "csh", "dash", "fish", "ksh", "login", "sh", "ssh", "sshd", "sudo", "tcsh", "tmux", "zsh",
+        ]
+        return !AgentActivityScanner.isProtectedRuntime(sample)
+            && !path.contains(".app/contents/") && !path.hasPrefix("/system/")
+            && !path.hasPrefix("/usr/libexec/") && !path.hasPrefix("/library/apple/system/")
+            && !protectedNames.contains(name)
     }
 
     private static func verifiedIdentity(for snapshot: ProcessSnapshot, observedBefore: Date) -> ProcessIdentity? {
@@ -390,17 +420,22 @@ final class ProcessScanner {
         return "\(processCount) processes"
     }
 
-    private func activityKind(for snapshot: ProcessSnapshot) -> ActivityProcessKind {
-        let value = snapshot.command.lowercased()
+    private func activityKind(for snapshot: ProcessSnapshot, executable: String? = nil) -> ActivityProcessKind {
+        let value = (executable ?? snapshot.command).lowercased()
         if snapshot.ownerUID == 0 || value.hasPrefix("/system/") || value.contains("/usr/libexec/") {
             return .system
         }
         if value.contains(".app/contents/") { return .application }
-        if activityToolTokens.contains(where: { value.contains($0) }) { return .developerTool }
+        if activityToolTokens.contains(where: { (value + " " + snapshot.command.lowercased()).contains($0) }) { return .developerTool }
         return .other
     }
 
-    private func activityDisplayName(for snapshot: ProcessSnapshot) -> String {
+    private func activityDisplayName(for snapshot: ProcessSnapshot, executable: String? = nil) -> String {
+        if let executable {
+            let name = URL(fileURLWithPath: executable).lastPathComponent
+            if name == "node", snapshot.command.hasPrefix("next-server") { return "Next.js server" }
+            if !name.isEmpty && name != "/" { return name }
+        }
         if let appRange = snapshot.command.range(of: ".app/", options: [.caseInsensitive, .backwards]) {
             let appPath = snapshot.command[..<appRange.lowerBound]
             if let component = appPath.split(separator: "/").last, !component.isEmpty {

@@ -28,9 +28,9 @@ The release DMG is for Apple silicon on macOS 13 or later. The app is ad-hoc sig
 
 ## Find what’s running
 
-**Running apps.** Right-click the menu bar icon, type an app’s name, and choose **Quit**. PortsKiller asks the app to quit normally, so the app can still prompt to save your work. It won’t force quit.
+**Quick panel.** Right-click the menu bar icon and choose **Apps** or **Processes**. Apps has a name filter and sends a normal Quit request, so the app can still ask you to save. Processes has a name/PID filter, types, RAM, and a confirmed Stop for eligible commands.
 
-**Agents.** See local commands PortsKiller can trace to Codex. Search by command, project, or PID, or click **RAM** to sort each group by memory. Expand a row to see what’s running, when it started, its CPU and memory, and the process IDs you can copy. Eligible command groups can be stopped after confirmation. Codex and helper services, such as Computer Use, hooks, and the artifact runtime, appear separately and are read-only. This view observes local processes. It does not read chats or show cloud task status.
+**Agents.** See local commands PortsKiller can trace to Codex or Claude Code. Filter by command, project, provider, or PID, or click **RAM** to sort each group. Use the row’s actions to reveal a verified project folder, copy the PID, open Details without moving the list, or stop an eligible command group after confirmation. Desktop runtimes and helper services such as Computer Use and MCP appear separately and remain read-only. This view does not read chats or show cloud task status.
 
 **Dev** shows likely development servers and **Ports** lists detected TCP listeners. Find what owns a port, open the localhost URL, reveal the project folder, or stop an eligible process. **Activity** shows resource-heavy local processes, simulators, and emulators even when they don’t listen on a port. For a quick resource check, the menu bar can show CPU or RAM.
 

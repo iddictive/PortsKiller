@@ -53,7 +53,7 @@ final class UtilityWindows: NSObject, NSApplicationDelegate, NSWindowDelegate, N
         let width = label.fittingSize.width + 12
         statusItem?.length = width
         label.frame = NSRect(x: 6, y: 0, width: width - 12, height: button.bounds.height)
-        button.toolTip = "PortsKiller · Right-click for running apps"
+        button.toolTip = "PortsKiller · Right-click for apps and processes"
     }
 
     @objc private func statusItemClicked() {
@@ -82,23 +82,25 @@ final class UtilityWindows: NSObject, NSApplicationDelegate, NSWindowDelegate, N
         let panel = NSPopover()
         let focus = QuickAppsFocus()
         let visibleHeight = button.window?.screen?.visibleFrame.height
-        let maxBodyHeight = min(QuickAppsView.maxBodyHeight, max(52, (visibleHeight ?? 700) - 142))
+        let maxBodyHeight = min(QuickAppsView.maxBodyHeight, max(52, (visibleHeight ?? 700) - QuickAppsView.maxChromeHeight))
         panel.delegate = self
         panel.behavior = .transient
         panel.animates = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         let host = NSHostingController(rootView: QuickAppsView(
+            model: model,
             focusRequest: focus,
             maximumBodyHeight: maxBodyHeight,
             onSizeChange: { [weak self, weak panel] size in
                 guard let self, let panel else { return }
                 self.updateQuickAppsSize(panel, to: size)
             },
-            onOpenWorkspace: { [weak self] in self?.showProcesses() }
+            onOpenWorkspace: { [weak self] in self?.showProcesses() },
+            onClose: { [weak self] in self?.dismissQuickApps(restoreFocus: true) }
         ))
         // The SwiftUI view owns its intrinsic size; AppKit owns screen placement.
         host.sizingOptions = []
         panel.contentViewController = host
-        let size = host.sizeThatFits(in: NSSize(width: QuickAppsView.width, height: maxBodyHeight + 142))
+        let size = host.sizeThatFits(in: NSSize(width: QuickAppsView.width, height: maxBodyHeight + QuickAppsView.maxChromeHeight))
         panel.contentSize = NSSize(width: QuickAppsView.width, height: ceil(size.height))
 
         quickAppsPopover = panel

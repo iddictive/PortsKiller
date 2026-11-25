@@ -94,6 +94,65 @@ final class AgentActivityTests: XCTestCase {
         XCTAssertEqual(tree.groupedProcessCount, 2)
     }
 
+    func testClaudeCodeNativeAncestrySeparatesItsCommandsFromDesktopAndBridges() throws {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let claude = home + "/Library/Application Support/Claude/claude-code/2.1.330/4262a1273231/claude.app/Contents/MacOS/claude"
+        let node = home + "/.nvm/versions/node/v26.12.1/bin/node"
+        let repo = URL(fileURLWithPath: "/Demo/Actual Repo")
+        let samples = AgentActivityScanner.samples("""
+            400 1 /Applications/Claude.app/Contents/MacOS/Claude
+            401 400 /Applications/Claude.app/Contents/Helpers/disclaimer
+            402 401 \(claude)
+            403 402 /bin/zsh
+            404 403 /usr/bin/clang
+            405 402 node
+            406 400 /Applications/Claude.app/Contents/Frameworks/Claude Helper.app/Contents/MacOS/Claude Helper
+            407 406 /bin/zsh
+            408 1 /opt/homebrew/bin/node
+            409 1 /tmp/claude
+            410 409 /bin/zsh
+            411 1 /Applications/Codex.app/Contents/Resources/codex
+            412 411 /bin/zsh
+            413 402 node
+            """)
+        let rows = AgentActivityScanner.activities(samples, observer: 999, verify: true, observe: { sample in
+            .init(identity: self.identity(for: sample.pid), memory: 1,
+                  location: sample.pid == 404 ? repo : nil,
+                  service: sample.pid == 405 ? "MCP bridge" : nil,
+                  actualExecutable: [405, 413].contains(sample.pid) ? node : nil)
+        }, project: { _ in nil })
+        let work = rows.filter { $0.kind == .work }
+        XCTAssertEqual(Set(work.compactMap(\.pid)), Set([403, 412, 413]))
+        XCTAssertEqual(Set(work.compactMap(\.provider)), Set([.claudeCode, .codex]))
+        let build = try XCTUnwrap(work.first { $0.pid == 403 })
+        XCTAssertEqual(build.identity, identity(for: 403))
+        XCTAssertEqual(build.projectFolder, repo.path)
+        XCTAssertEqual(build.parentPID, 402)
+        XCTAssertEqual(build.parentName, "Claude Code")
+        XCTAssertEqual(build.memberPIDs, [403, 404])
+        XCTAssertEqual(rows.first { $0.title == "MCP bridge" }?.identity, nil)
+        XCTAssertEqual(rows.first { $0.title == "MCP bridge" }?.provider, .claudeCode)
+        XCTAssertEqual(rows.first { $0.title == "Claude Desktop" }?.kind, .host)
+        XCTAssertEqual(rows.first { $0.title == "Claude Code" }?.pid, 402)
+    }
+
+    func testCanonicalExecutableRecoversNodeButRejectsChangedOrLookalikeRuntime() throws {
+        let samples = AgentActivityScanner.samples("""
+            420 402 node
+            421 1 /tmp/claude
+            422 1 /tmp/Claude.app/Contents/MacOS/Claude
+            423 1 /home/demo/.local/share/claude/versions/2.1.330
+            424 1 /home/demo/Library/Application Support/Claude/claude-code/2.1.330/custom/claude.app/Contents/MacOS/claude
+            """)
+        let node = try XCTUnwrap(samples.first)
+        XCTAssertTrue(AgentActivityScanner.matchesExecutable(reported: node, canonical: "/opt/homebrew/bin/node"))
+        XCTAssertFalse(AgentActivityScanner.matchesExecutable(reported: node, canonical: "/usr/bin/clang"))
+        XCTAssertNil(samples[1].provider(under: "/home/demo"))
+        XCTAssertNil(samples[2].provider(under: "/home/demo"))
+        XCTAssertEqual(samples[3].provider(under: "/home/demo"), .claudeCode)
+        XCTAssertNil(samples[4].provider(under: "/home/demo"))
+    }
+
     func testScriptLabelRequiresAFileInsideTheCheckout() throws {
         let base = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
             .appendingPathComponent("PortsKiller-test-\(UUID().uuidString)", isDirectory: true)

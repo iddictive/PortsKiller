@@ -3,6 +3,20 @@ import Foundation
 
 /// A local process observation, not a guessed Codex conversation or a remote job.
 struct AgentActivity: Identifiable, Equatable, Sendable {
+    enum Provider: String, Hashable, Sendable {
+        case codex, claudeCode, claudeDesktop
+
+        var title: String {
+            switch self {
+            case .codex: "Codex"
+            case .claudeCode: "Claude Code"
+            case .claudeDesktop: "Claude Desktop"
+            }
+        }
+
+        var canOwnCommands: Bool { self != .claudeDesktop }
+    }
+
     enum Kind: Int, Equatable, Sendable {
         case work, service, host, unavailable
 
@@ -32,16 +46,22 @@ struct AgentActivity: Identifiable, Equatable, Sendable {
     var startedAt: Date? = nil
     var toolContext: String? = nil
     var memberPIDs: [Int32] = []
+    var provider: Provider? = nil
+    var parentPID: Int32? = nil
+    var parentName: String? = nil
+    var projectFolder: String? = nil
     var rowSubtitle: String {
         guard kind == .work else { return detail }
         let count = groupedProcessCount.flatMap { $0 > 1 ? "\($0) processes" : nil }
         let fields = [project, toolContext, count].compactMap { $0 }
-        return fields.isEmpty ? "Started under Codex" : fields.joined(separator: " · ")
+        return fields.isEmpty ? provider.map { "Under \($0.title)" } ?? "Local command" : fields.joined(separator: " · ")
     }
     var status: String { kind.title }
 }
 
 struct AgentActivityScanner {
+    private static let home = FileManager.default.homeDirectoryForCurrentUser.path
+
     struct Sample: Equatable {
         let pid: Int32
         let parent: Int32
@@ -49,14 +69,56 @@ struct AgentActivityScanner {
         let cpu: Double?
 
         var name: String { URL(fileURLWithPath: executable).lastPathComponent }
-        var isCodex: Bool {
-            guard name == "codex" else { return false }
-            return executable == "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"
-                || executable == "/Applications/Codex.app/Contents/Resources/codex"
-                || (executable.hasPrefix("/opt/homebrew/") || executable.hasPrefix("/usr/local/"))
-                    && (executable.contains("/node_modules/@openai/") || executable.contains("/Caskroom/codex/"))
-                || ["/opt/homebrew/bin/codex", "/usr/local/bin/codex"].contains(executable)
+        var isCodex: Bool { runtimeProvider == .codex }
+        var runtimeProvider: AgentActivity.Provider? { provider(under: AgentActivityScanner.home) }
+
+        func provider(under home: String) -> AgentActivity.Provider? {
+            let applicationPath = executable.hasPrefix(home + "/Applications/")
+                ? String(executable.dropFirst(home.count)) : executable
+            let managed = executable.hasPrefix("/opt/homebrew/") || executable.hasPrefix("/usr/local/")
+            let parts = executable.split(separator: "/")
+            if name == "codex" {
+                if ["/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+                    "/Applications/Codex.app/Contents/Resources/codex", "/Applications/Codex.app/Contents/MacOS/codex",
+                    "/opt/homebrew/bin/codex", "/usr/local/bin/codex"].contains(applicationPath) { return .codex }
+                if managed && executable.contains("/Caskroom/codex/") { return .codex }
+                if let namespace = parts.lastIndex(of: "@openai"), namespace > 0, parts[namespace - 1] == "node_modules",
+                   parts.indices.contains(namespace + 2),
+                   ["codex", "codex-darwin-arm64", "codex-darwin-x64"].contains(parts[namespace + 1]),
+                   parts[namespace + 2] == "vendor" { return .codex }
+            }
+            if applicationPath == "/Applications/Claude.app/Contents/MacOS/Claude" { return .claudeDesktop }
+            if name == "claude" {
+                let desktopPrefix = home + "/Library/Application Support/Claude/claude-code/"
+                if executable.hasPrefix(desktopPrefix) {
+                    let suffix = executable.dropFirst(desktopPrefix.count).split(separator: "/")
+                    if suffix.count == 6, Self.isRelease(suffix[0]),
+                       !suffix[1].isEmpty, suffix[1].allSatisfy(\.isHexDigit),
+                       Array(suffix.dropFirst(2)) == ["claude.app", "Contents", "MacOS", "claude"] { return .claudeCode }
+                }
+                if managed && (executable.contains("/Caskroom/claude-code/")
+                               || ["/opt/homebrew/bin/claude", "/usr/local/bin/claude"].contains(executable)) {
+                    return .claudeCode
+                }
+            }
+            let versions = home + "/.local/share/claude/versions/"
+            if executable.hasPrefix(versions), Self.isRelease(executable.dropFirst(versions.count)) { return .claudeCode }
+            return nil
         }
+
+        private static func isRelease(_ value: Substring) -> Bool {
+            let version = value.split(separator: ".", omittingEmptySubsequences: false)
+            return version.count == 3 && version.allSatisfy { !$0.isEmpty && $0.allSatisfy(\.isNumber) }
+        }
+
+        var possiblyRuntime: Bool {
+            runtimeProvider != nil || (!executable.contains("/") && ["codex", "claude", "claude-code"].contains(name.lowercased()))
+        }
+
+        func resolving(to path: String) -> Sample {
+            Sample(pid: pid, parent: parent, executable: path, cpu: cpu)
+        }
+
         var service: String? {
             if executable.hasPrefix("/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/")
                 || (name == "SkyComputerUseService" && executable.hasSuffix("/.codex/computer-use/Codex Computer Use.app/Contents/MacOS/SkyComputerUseService")) {
@@ -71,6 +133,12 @@ struct AgentActivityScanner {
             if (executable.hasPrefix("/Applications/ChatGPT.app/Contents/") || executable.hasPrefix("/Applications/Codex.app/Contents/")) {
                 return "Codex app helpers"
             }
+            if executable == "/Applications/Claude.app/Contents/Helpers/disclaimer" {
+                return "Claude Code launcher"
+            }
+            if executable.hasPrefix("/Applications/Claude.app/Contents/") {
+                return "Claude app helpers"
+            }
             return nil
         }
 
@@ -83,6 +151,8 @@ struct AgentActivityScanner {
         let location: URL?
         var cwd: URL? = nil
         var service: String? = nil
+        var actualExecutable: String? = nil
+        var provider: AgentActivity.Provider? = nil
     }
 
     struct Appearance: Equatable {
@@ -94,13 +164,14 @@ struct AgentActivityScanner {
 
     func scan() -> [AgentActivity] {
         // The global snapshot contains only executable paths and process metadata.
+        let startedBefore = Date()
         let result = Shell.run("/bin/ps", ["-U", String(getuid()), "-ww", "-o", "pid=,ppid=,%cpu=,comm="])
         let samples = Self.samples(result.output, withCPU: true)
         guard result.status == 0, !samples.isEmpty else {
             return [AgentActivity(id: "processes-unavailable", title: "Local processes unavailable",
                                   detail: "macOS did not return a process snapshot.", pid: nil, kind: .unavailable)]
         }
-        return Self.activities(samples, observer: getpid(), verify: true, observe: Self.observe,
+        return Self.activities(samples, observer: getpid(), verify: true, observe: { Self.observe($0, before: startedBefore) },
                                describe: Self.appearance, project: { _ in nil })
     }
 
@@ -118,8 +189,13 @@ struct AgentActivityScanner {
                            describe: (Sample, Observation) -> Appearance? = { _, _ in nil },
                            project: (Int32) -> String?) -> [AgentActivity] {
         let byParent = Dictionary(grouping: samples, by: \.parent)
+        let byPID = Dictionary(samples.map { ($0.pid, $0) }, uniquingKeysWith: { first, _ in first })
         var rows = [AgentActivity]()
-        var services = [String: [Sample]]()
+        struct ServiceKey: Hashable {
+            let title: String
+            let provider: AgentActivity.Provider
+        }
+        var services = [ServiceKey: [Sample]]()
         var visited = Set<Int32>([observer])
         var read = [Int32: Observation]()
         var unreadable = Set<Int32>()
@@ -132,7 +208,20 @@ struct AgentActivityScanner {
             read[sample.pid] = data
             return data
         }
-        let runtimes = samples.filter { $0.isCodex && (!verify || metadata($0) != nil) }
+        let runtimes = samples.filter(\.possiblyRuntime).reduce(into: [Int32: AgentActivity.Provider]()) { result, sample in
+            let observed = metadata(sample)
+            guard !verify || observed != nil else { return }
+            result[sample.pid] = observed?.provider ?? sample.runtimeProvider
+        }
+        func resolved(_ sample: Sample) -> Sample {
+            guard let path = metadata(sample)?.actualExecutable else { return sample }
+            return sample.resolving(to: path)
+        }
+        func parentName(_ pid: Int32) -> String? {
+            if let runtime = runtimes[pid] { return runtime.title }
+            guard let parent = byPID[pid], pid > 1, safeLabel(parent.name) else { return nil }
+            return parent.name
+        }
         func totals(_ nodes: [Sample]) -> (memory: UInt64?, cpu: Double?) {
             let footprints = nodes.compactMap { metadata($0)?.memory }
             let cpu = nodes.compactMap(\.cpu).filter { $0.isFinite && $0 >= 0 }
@@ -142,30 +231,31 @@ struct AgentActivityScanner {
             }
             return (footprints.count == nodes.count ? sum : nil, cpu.count == nodes.count ? cpu.reduce(0, +) : nil)
         }
-        func consume(_ node: Sample, serviceParent: String? = nil) {
-            guard node.pid != observer, !node.isCodex, !node.isInspector,
+        func consume(_ node: Sample, provider: AgentActivity.Provider, serviceParent: String? = nil) {
+            guard node.pid != observer, runtimes[node.pid] == nil, !node.isInspector,
                   visited.insert(node.pid).inserted else { return }
             let root = metadata(node)
             // The snapshot may already be stale. Do not attribute a recycled PID.
             guard !verify || root != nil else { return }
             if let service = node.service ?? root?.service ?? serviceParent {
-                services[service, default: []].append(node)
-                for child in byParent[node.pid] ?? [] { consume(child, serviceParent: service) }
+                services[ServiceKey(title: service, provider: provider), default: []].append(node)
+                for child in byParent[node.pid] ?? [] { consume(child, provider: provider, serviceParent: service) }
                 return
             }
+            guard provider.canOwnCommands else { return }
 
             var subtree = [node]
             var index = 0
             var canStop = root != nil
             while index < subtree.count {
                 for child in byParent[subtree[index].pid] ?? [] {
-                    guard !child.isCodex, !child.isInspector, child.pid != observer, metadata(child) != nil || !verify else {
+                    guard runtimes[child.pid] == nil, !child.isInspector, child.pid != observer, metadata(child) != nil || !verify else {
                         canStop = false
                         continue
                     }
                     if child.service != nil || metadata(child)?.service != nil {
                         canStop = false
-                        consume(child)
+                        consume(child, provider: provider)
                         continue
                     }
                     if visited.insert(child.pid).inserted { subtree.append(child) }
@@ -173,7 +263,7 @@ struct AgentActivityScanner {
                 index += 1
             }
             let shells = ["sh", "bash", "zsh", "fish", "env", "sandbox-exec"]
-            let foreground = subtree.filter { !shells.contains($0.name) }
+            let foreground = subtree.map(resolved).filter { !shells.contains($0.name) }
             var representative = foreground.first ?? node
             var appearance: Appearance?
             for candidate in foreground.prefix(12) {
@@ -183,7 +273,8 @@ struct AgentActivityScanner {
                 appearance = value
                 if value.rank >= 3 { break }
             }
-            let cwd = appearance?.location?.lastPathComponent ?? metadata(representative)?.location?.lastPathComponent ?? root?.location?.lastPathComponent
+            let folder = appearance?.location ?? metadata(representative)?.location ?? root?.location
+            let cwd = folder?.lastPathComponent
                 ?? project(representative.pid) ?? (representative.pid == node.pid ? nil : project(node.pid))
             let group = subtree.count > 1 ? "\(subtree.count) processes" : nil
             let detail = [cwd, group].compactMap { $0 }.joined(separator: " · ")
@@ -192,31 +283,52 @@ struct AgentActivityScanner {
             let stamp = root.map { "\($0.identity.startTimeSeconds).\($0.identity.startTimeMicroseconds)" } ?? node.name
             let fallback = safeLabel(representative.name) ? representative.name : "Local command"
             rows.append(AgentActivity(id: "local:\(node.pid):\(stamp)", title: appearance?.title ?? fallback,
-                                      detail: detail.isEmpty ? "Started under Codex" : detail, pid: node.pid,
+                                      detail: detail.isEmpty ? "Under \(provider.title)" : detail, pid: node.pid,
                                       kind: .work, project: cwd, groupedProcessCount: subtree.count,
                                       memoryBytes: resources.memory, cpuPercent: resources.cpu, identity: canStop ? root?.identity : nil,
-                                      startedAt: start, toolContext: appearance?.context, memberPIDs: subtree.map(\.pid).sorted()))
+                                      startedAt: start, toolContext: appearance?.context, memberPIDs: subtree.map(\.pid).sorted(),
+                                      provider: provider, parentPID: node.parent, parentName: parentName(node.parent),
+                                      projectFolder: folder?.path))
         }
-        for runtime in runtimes {
-            for child in byParent[runtime.pid] ?? [] { consume(child) }
+        for sample in samples {
+            guard let provider = runtimes[sample.pid] else { continue }
+            for child in byParent[sample.pid] ?? [] where provider.canOwnCommands || child.service == "Claude Code launcher" {
+                consume(child, provider: provider)
+            }
         }
         // Well-known detached helpers are not work and cannot be interrupted here.
-        for sample in samples where sample.service != nil && sample.service != "Codex app helpers" && !sample.isCodex {
-            consume(sample)
+        let detachedServices = ["Computer use", "Codex hooks", "Codex artifact runtime"]
+        for sample in samples where sample.service.map(detachedServices.contains) == true {
+            consume(sample, provider: .codex)
         }
-        for (title, nodes) in services {
+        for (key, nodes) in services {
             let n = nodes.count
             let resources = totals(nodes)
-            rows.append(AgentActivity(id: "service:\(title)", title: title, detail: "\(n) helper process\(n == 1 ? "" : "es")",
+            let parents = Set(nodes.map(\.parent))
+            let parent = parents.count == 1 ? parents.first : nil
+            rows.append(AgentActivity(id: "service:\(key.provider.rawValue):\(key.title)", title: key.title, detail: "\(n) helper process\(n == 1 ? "" : "es")",
                                       pid: n == 1 ? nodes.first?.pid : nil, kind: .service, groupedProcessCount: n,
-                                      memoryBytes: resources.memory, cpuPercent: resources.cpu, memberPIDs: nodes.map(\.pid).sorted()))
+                                      memoryBytes: resources.memory, cpuPercent: resources.cpu, memberPIDs: nodes.map(\.pid).sorted(),
+                                      provider: key.provider, parentPID: parent, parentName: parent.flatMap(parentName)))
         }
-        if !runtimes.isEmpty {
-            let n = runtimes.count
-            let resources = totals(runtimes)
-            rows.append(AgentActivity(id: "codex-runtime", title: "Codex", detail: "\(n) local runtime\(n == 1 ? "" : "s")",
-                                      pid: n == 1 ? runtimes.first?.pid : nil, kind: .host, groupedProcessCount: n,
-                                      memoryBytes: resources.memory, cpuPercent: resources.cpu, memberPIDs: runtimes.map(\.pid).sorted()))
+        var runtimeGroups = [AgentActivity.Provider: [Sample]]()
+        for sample in samples {
+            if let provider = runtimes[sample.pid] { runtimeGroups[provider, default: []].append(sample) }
+        }
+        for (provider, nodes) in runtimeGroups {
+            let n = nodes.count
+            let resources = totals(nodes)
+            let only = n == 1 ? nodes.first : nil
+            let roots = Set(nodes.map { metadata($0)?.location })
+            let folder = roots.count == 1 ? roots.first ?? nil : nil
+            let parent = only?.parent
+            rows.append(AgentActivity(id: provider == .codex ? "codex-runtime" : "\(provider.rawValue)-runtime",
+                                      title: provider.title,
+                                      detail: provider.canOwnCommands ? "\(n) local runtime\(n == 1 ? "" : "s")" : "Desktop application",
+                                      pid: only?.pid, kind: .host, project: folder?.lastPathComponent, groupedProcessCount: n,
+                                      memoryBytes: resources.memory, cpuPercent: resources.cpu, memberPIDs: nodes.map(\.pid).sorted(),
+                                      provider: provider, parentPID: parent, parentName: parent.flatMap(parentName),
+                                      projectFolder: folder?.path))
         }
         return rows.sorted {
             if $0.kind != $1.kind { return $0.kind.rawValue < $1.kind.rawValue }
@@ -239,7 +351,7 @@ struct AgentActivityScanner {
                (record.identity.startTimeSeconds, record.identity.startTimeMicroseconds) >
                    (child.startTimeSeconds, child.startTimeMicroseconds) { return false }
             let sample = Sample(pid: cursor, parent: record.parent, executable: executable, cpu: nil)
-            if sample.isCodex { return depth > 0 }
+            if let provider = sample.runtimeProvider { return depth > 0 && provider.canOwnCommands }
             guard sample.service == nil, !sample.isInspector, record.parent != cursor,
                   interpretedService(sample) == nil, processRecord(cursor)?.identity == record.identity else { return false }
             child = record.identity
@@ -266,18 +378,32 @@ struct AgentActivityScanner {
         return String(decoding: buffer.prefix(while: { $0 != 0 }), as: UTF8.self)
     }
 
-    private static func observe(_ sample: Sample) -> Observation? {
-        guard let record = processRecord(sample.pid), record.identity.ownerUID == getuid(),
-              record.parent == sample.parent, processPath(sample.pid) == sample.executable else { return nil }
+    static func matchesExecutable(reported: Sample, canonical path: String) -> Bool {
+        if reported.executable == path { return true }
+        guard !reported.executable.contains("/") else { return false }
+        let actual = reported.resolving(to: path)
+        return reported.name == actual.name || (reported.possiblyRuntime && actual.runtimeProvider != nil)
+    }
+
+    private static func observe(_ reported: Sample, before snapshotStart: Date) -> Observation? {
+        guard let record = processRecord(reported.pid), record.identity.ownerUID == getuid(),
+              record.parent == reported.parent, let path = processPath(reported.pid),
+              matchesExecutable(reported: reported, canonical: path) else { return nil }
+        let started = Double(record.identity.startTimeSeconds) + Double(record.identity.startTimeMicroseconds) / 1_000_000
+        guard started <= snapshotStart.timeIntervalSince1970 else { return nil }
+        let sample = reported.resolving(to: path)
+        let provider = sample.runtimeProvider
         var usage = rusage_info_v2()
         let usageStatus = withUnsafeMutablePointer(to: &usage) {
             $0.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { proc_pid_rusage(sample.pid, RUSAGE_INFO_V2, $0) }
         }
-        let service = sample.service ?? interpretedService(sample)
-        let cwd = !sample.isCodex && service == nil ? workingDirectory(sample.pid) : nil
-        guard processRecord(sample.pid)?.identity == record.identity else { return nil }
+        let service = provider == nil ? sample.service ?? interpretedService(sample) : nil
+        let cwd = provider != .claudeDesktop && service == nil ? workingDirectory(sample.pid) : nil
+        guard let latest = processRecord(sample.pid), latest.identity == record.identity, latest.parent == record.parent,
+              processPath(sample.pid) == path else { return nil }
         return Observation(identity: record.identity, memory: usageStatus == 0 ? usage.ri_phys_footprint : nil,
-                           location: cwd.flatMap(projectRoot), cwd: cwd, service: service)
+                           location: cwd.flatMap(projectRoot), cwd: cwd, service: service,
+                           actualExecutable: path, provider: provider)
     }
 
     private static func workingDirectory(_ pid: Int32) -> URL? {
@@ -318,6 +444,7 @@ struct AgentActivityScanner {
             let appleTool = path.hasPrefix("/usr/bin/") || path.hasPrefix("/Library/Developer/CommandLineTools/")
                 || path.hasPrefix("/Applications/Xcode.app/Contents/Developer/")
             let installedTool = path.hasPrefix("/opt/homebrew/") || path.hasPrefix("/usr/local/")
+                || path.hasPrefix(AgentActivityScanner.home + "/.nvm/versions/node/")
             guard appleTool || installedTool else { return nil }
             if name == "python" || name == "python3" || (name.hasPrefix("python3.") && name.dropFirst(8).allSatisfy(\.isNumber)) {
                 self = .python
@@ -353,8 +480,22 @@ struct AgentActivityScanner {
 
     /// The installed Safari bridge is itself a Python script, not an independent
     /// user command. An arbitrary script in .codex/bin is deliberately not a match.
+    /// Shared guard for both the Agents tree and direct process actions.
+    static func isProtectedRuntime(_ sample: Sample) -> Bool {
+        sample.runtimeProvider != nil || sample.isInspector || sample.service != nil
+            || interpretedService(sample) != nil
+    }
+
     private static func interpretedService(_ sample: Sample) -> String? {
-        guard Tool(sample) == .python else { return nil }
+        guard let tool = Tool(sample), tool == .python || tool == .node else { return nil }
+        if tool == .node {
+            return withArgv(sample) { arguments in
+                var args = arguments
+                guard let operand = args.next(), let script = operand.projectPathCandidate(),
+                      verifiedMCPEntry(script) else { return nil }
+                return "MCP bridge"
+            }
+        }
         let script = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".codex/bin/codex-safari-native").path
         return withArgv(sample) { arguments in
@@ -366,7 +507,22 @@ struct AgentActivityScanner {
         }
     }
 
+    static func verifiedMCPEntry(_ script: String) -> Bool {
+        let supportRoots = [home + "/.codex/mcp/", home + "/.claude/mcp/"]
+        guard let root = supportRoots.first(where: { script.hasPrefix($0) }) else { return false }
+        let candidate = URL(fileURLWithPath: script)
+        let resolved = candidate.resolvingSymlinksInPath()
+        guard ["js", "cjs", "mjs"].contains(candidate.pathExtension.lowercased()),
+              resolved.path.hasPrefix(root),
+              let type = try? FileManager.default.attributesOfItem(atPath: resolved.path)[.type] as? FileAttributeType
+        else { return false }
+        return type == .typeRegular
+    }
+
     private static func appearance(_ sample: Sample, _ data: Observation) -> Appearance? {
+        if ["xcodebuild", "clang", "clang++", "swiftc", "swift-frontend", "make", "cmake", "ninja", "cargo", "rustc"].contains(sample.name) {
+            return Appearance(title: sample.name, context: "Build tool", rank: 2)
+        }
         guard let tool = Tool(sample), processRecord(sample.pid)?.identity == data.identity else { return nil }
         let fallback = Appearance(title: tool.label, context: sample.name == tool.label ? "Interpreter" : sample.name, rank: 1)
         if tool == .swift, ["swift-build", "swift-run", "swift-test", "swift-package"].contains(sample.name) {

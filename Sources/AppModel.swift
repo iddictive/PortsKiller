@@ -36,6 +36,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var pendingLocalActions: [Int32: String] = [:]
     @Published private var listenerActionMessage: String?
     @Published private var activityActionMessage: String?
+    @Published private(set) var quickActivityProcesses: [ActivityProcess] = []
+    @Published private(set) var activityScanCompletedAt: Date?
     @Published var systemResources: SystemResourceUsage = .unavailable
     @Published var projects: [ManualProject] = []
     @Published var selectedLogProjectID: UUID?
@@ -50,6 +52,7 @@ final class AppModel: ObservableObject {
         didSet { if processViewMode != oldValue { refresh() } }
     }
 
+    var quickActivityActionMessage: String? { activityActionMessage }
     var activeScanCompletedAt: Date? { scans[processViewMode]?.completedAt }
     var activeLocalActionMessage: String? {
         switch processViewMode {
@@ -85,6 +88,8 @@ final class AppModel: ObservableObject {
     private var refreshTimer: Timer?
     private var resourceTimer: Timer?
     private var refreshTask: Task<Void, Never>?
+    private var quickActivityTask: Task<Void, Never>?
+    private var quickActivityRefreshPending = false
     private var refreshGeneration = 0
     private var refreshPending = false
     private var cancellables: Set<AnyCancellable> = []
@@ -159,6 +164,31 @@ final class AppModel: ObservableObject {
                 self.startRefresh()
             }
         }
+    }
+
+    func refreshQuickActivity() {
+        guard quickActivityTask == nil else {
+            quickActivityRefreshPending = true
+            return
+        }
+        quickActivityTask = Task { [weak self] in
+            let rows = await Task.detached(priority: .utility) {
+                ProcessScanner().scanActivity(includingIdle: true)
+            }.value
+            guard let self else { return }
+            self.quickActivityProcesses = rows
+            self.activityScanCompletedAt = Date()
+            self.quickActivityTask = nil
+            if self.quickActivityRefreshPending {
+                self.quickActivityRefreshPending = false
+                self.refreshQuickActivity()
+            }
+        }
+    }
+
+    private func refreshInstalledActivity() {
+        if activityScanCompletedAt != nil || quickActivityTask != nil { refreshQuickActivity() }
+        refresh()
     }
 
     func refreshSystemResources() {
@@ -273,24 +303,25 @@ final class AppModel: ObservableObject {
     func stop(_ process: ActivityProcess) {
         guard let pid = process.primaryPID, pendingLocalActions[pid] == nil else { return }
         guard process.canStop, let identity = process.identity,
-              activityProcesses.contains(where: { $0.id == process.id && $0.identity == identity }) else {
+              (activityProcesses + quickActivityProcesses).contains(where: { $0.id == process.id && $0.identity == identity }) else {
             activityActionMessage = "The process changed. No stop signal sent."
-            refresh()
+            refreshInstalledActivity()
             return
         }
         activityActionMessage = nil
         pendingLocalActions[pid] = "Stopping…"
         let controller = processController
+        let permits: @Sendable (Int32) -> Bool = process.kind == .simulator
+            ? ProcessScanner.permitsLocalAction : ProcessScanner.permitsActivityAction
         Task { [weak self] in
             let result = await Task.detached(priority: .userInitiated) {
                 await controller.interruptLocalCommand(rootPID: pid, expectedIdentity: identity,
-                                                       displayedPIDs: process.targetPIDs,
-                                                       permits: ProcessScanner.permitsLocalAction)
+                                                       displayedPIDs: process.targetPIDs, permits: permits)
             }.value
             guard let self else { return }
             self.pendingLocalActions[pid] = nil
             self.activityActionMessage = Self.interruptMessage(result, pid: pid)
-            self.refresh()
+            self.refreshInstalledActivity()
         }
     }
 

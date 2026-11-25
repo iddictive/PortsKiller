@@ -9,7 +9,6 @@ struct MenuContentView: View {
     @EnvironmentObject private var model: AppModel
     @ViewState private var showingSettings = false
     @ViewState private var searchByMode: [ProcessViewMode: String] = [:]
-    @ViewState private var selectedAgentID: String?
     @ViewState private var interruptTarget: AgentActivity?
     @ViewState private var confirmingInterrupt = false
     @ViewState private var ramSort: Bool? = nil
@@ -40,6 +39,7 @@ struct MenuContentView: View {
                 if showingSettings {
                     PreferencesView(addProjectAction: addProjectAction.map { open in { open(nil) } })
                 } else {
+                    WorkspaceSeparator().padding(.horizontal, WorkspaceStyle.gutter)
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 2) {
                             if model.processViewMode == .agents, FeatureFlags.sessionRecovery { SessionRecoveryView() }
@@ -58,21 +58,18 @@ struct MenuContentView: View {
                             showAgentPIDColumn = fits
                         }
                         .padding(.horizontal, WorkspaceStyle.gutter)
+                        .padding(.top, 8)
                         .padding(.bottom, 16)
                     }
+                    .workspaceScrollEdges()
                     .id(model.processViewMode)
+                    WorkspaceSeparator().padding(.horizontal, WorkspaceStyle.gutter)
                     workspaceFooter
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
         .foregroundStyle(WorkspaceStyle.ink)
-        .onChange(of: model.processViewMode) { _ in
-            selectedAgentID = nil
-        }
-        .onChange(of: filteredAgents.map(\.id)) { ids in
-            if let selectedAgentID, !ids.contains(selectedAgentID) { self.selectedAgentID = nil }
-        }
         .alert("Interrupt this command?", isPresented: $confirmingInterrupt, presenting: interruptTarget) { item in
             Button("Cancel", role: .cancel) {}
             Button("Interrupt", role: .destructive) { model.stopAgent(item) }
@@ -203,7 +200,7 @@ struct MenuContentView: View {
     private var filterScope: (prompt: String, label: String, help: String) {
         switch model.processViewMode {
         case .agents:
-            ("Project or PID", "Filter agents", "Filter by project, tool, process type, or any PID (⌘F)")
+            ("Project or PID", "Filter agents", "Filter by project, command, provider, or PID (⌘F)")
         case .dev, .all:
             ("URL, port, PID", "Filter listening processes", "Filter by project, framework, host, URL, port, or PID (⌘F)")
         case .activity:
@@ -216,7 +213,8 @@ struct MenuContentView: View {
         return WorkspaceFilterField(
             query: Binding(get: { query }, set: { query = $0 }),
             focus: $searchFocused, prompt: scope.prompt, label: scope.label,
-            identifier: "workspace.filter", height: 34, clearsOnEscape: true
+            identifier: "workspace.filter", height: 34, clearsOnEscape: true,
+            prominentPrompt: true
         )
         .frame(width: showAgentPIDColumn ? 178 : 135)
         .background {
@@ -256,7 +254,8 @@ struct MenuContentView: View {
 
     private var filteredAgents: [AgentActivity] {
         filter(model.agentActivities, text: { row in
-            [row.title, row.detail, row.kind.title, row.project ?? "", row.toolContext ?? ""]
+            [row.title, row.detail, row.kind.title, row.project ?? "", row.toolContext ?? "",
+             row.provider?.title ?? "", row.parentName ?? "", row.projectFolder ?? ""]
         }, numbers: { row in
             row.memberPIDs.map(Int.init) + (row.pid.map { [Int($0)] } ?? [])
         })
@@ -300,7 +299,12 @@ struct MenuContentView: View {
                 }, numbers: { [$0.port, Int($0.pid)] })
                 if all.isEmpty { EmptyStateView() }
                 else if items.isEmpty { noMatches }
-                else { ForEach(items) { ProcessRow(process: $0, configureRestart: { addProjectAction?($0) }) } }
+                else {
+                    ForEach(items) {
+                        ProcessRow(process: $0, usesDirectActions: true,
+                                   configureRestart: { addProjectAction?($0) })
+                    }
+                }
             }
         }
     }
@@ -327,7 +331,7 @@ struct MenuContentView: View {
             if !work.isEmpty {
                 agentSection("Local commands", rows: work, showColumns: true)
             } else if filterTokens.isEmpty || model.agentActivities.isEmpty {
-                agentScanState("No local Codex commands detected", detail: "Cloud jobs aren’t shown here.", symbol: "terminal")
+                agentScanState("No local agent commands detected", detail: "Cloud jobs aren’t shown here.", symbol: "terminal")
             }
             if !services.isEmpty {
                 agentSection("Runtimes and services", rows: services, showColumns: work.isEmpty)
@@ -358,16 +362,12 @@ struct MenuContentView: View {
     private func agentSection(_ title: String, rows: [AgentActivity], showColumns: Bool) -> some View {
         Section {
             ForEach(sortedByMemory(rows)) { item in
-                let expanded = selectedAgentID == item.id
                 let interrupting = model.stoppingAgentIDs.contains(item.id)
                 AgentObservationRow(
                     item: item,
-                    expanded: expanded,
                     interrupting: interrupting,
                     showPIDColumn: showAgentPIDColumn
                 ) {
-                    selectedAgentID = expanded ? nil : item.id
-                } onInterrupt: {
                     interruptTarget = item
                     confirmingInterrupt = true
                 }
@@ -400,8 +400,8 @@ struct MenuContentView: View {
                         Text("PID")
                             .frame(width: AgentObservationRow.pidWidth, alignment: .trailing)
                     }
-                    Color.clear.frame(width: AgentObservationRow.disclosureWidth, height: 1)
-                    Color.clear.frame(width: AgentObservationRow.actionWidth, height: 1)
+                    Text("Actions")
+                        .frame(width: WorkspaceRowActionMetrics.width)
                 }
             }
             .font(.caption.weight(.medium))
@@ -438,25 +438,88 @@ struct MenuContentView: View {
     }
 }
 
+private enum WorkspaceRowActionMetrics {
+    static let size: CGFloat = 28
+    static let spacing: CGFloat = 3
+    static let width = 4 * size + 3 * spacing
+}
+
+private struct WorkspaceRowActions<Reveal: View, Copy: View, Extra: View, Stop: View>: View {
+    @ViewBuilder var reveal: () -> Reveal
+    @ViewBuilder var copy: () -> Copy
+    @ViewBuilder var extra: () -> Extra
+    @ViewBuilder var stop: () -> Stop
+
+    var body: some View {
+        HStack(spacing: WorkspaceRowActionMetrics.spacing) {
+            reveal().frame(width: WorkspaceRowActionMetrics.size)
+            copy().frame(width: WorkspaceRowActionMetrics.size)
+            extra().frame(width: WorkspaceRowActionMetrics.size)
+            stop().frame(width: WorkspaceRowActionMetrics.size)
+        }
+        .frame(width: WorkspaceRowActionMetrics.width, height: WorkspaceRowActionMetrics.size)
+    }
+}
+
+private struct WorkspaceRowAction: View {
+    let title: String
+    let symbol: String
+    var role: ButtonRole?
+    var unavailableReason: String?
+    var pending: String?
+    var selected = false
+    var hint: String?
+    let action: () -> Void
+
+    init(_ title: String, symbol: String, role: ButtonRole? = nil,
+         unavailableReason: String? = nil, pending: String? = nil,
+         selected: Bool = false, hint: String? = nil, action: @escaping () -> Void) {
+        self.title = title
+        self.symbol = symbol
+        self.role = role
+        self.unavailableReason = unavailableReason
+        self.pending = pending
+        self.selected = selected
+        self.hint = hint
+        self.action = action
+    }
+
+    var body: some View {
+        Group {
+            if let pending {
+                ProgressView().controlSize(.mini)
+                    .accessibilityLabel(pending)
+            } else {
+                Button(role: role, action: action) {
+                    Image(systemName: symbol)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(unavailableReason == nil ? WorkspaceStyle.ink : WorkspaceStyle.disabledInk)
+                        .frame(width: WorkspaceRowActionMetrics.size, height: WorkspaceRowActionMetrics.size)
+                }
+                .buttonStyle(WorkspaceButton(selected: selected))
+                .disabled(unavailableReason != nil)
+                .accessibilityLabel(title)
+                .accessibilityHint(unavailableReason ?? hint ?? "")
+            }
+        }
+        .frame(width: WorkspaceRowActionMetrics.size, height: WorkspaceRowActionMetrics.size)
+        .contentShape(Rectangle())
+        .help(unavailableReason ?? pending ?? title)
+    }
+}
+
 private struct AgentObservationRow: View {
     nonisolated static let pidColumnThreshold: CGFloat = 500
     static let horizontalInset: CGFloat = 10
     static let columnSpacing: CGFloat = 10
     static let ramWidth: CGFloat = 68
     static let pidWidth: CGFloat = 48
-    static let disclosureWidth: CGFloat = 14
-    private static let copyWidth: CGFloat = 29
-    private static let stopWidth: CGFloat = 56
-    private static let actionSpacing: CGFloat = 4
-    static let actionWidth = copyWidth + stopWidth + actionSpacing
-
     let item: AgentActivity
-    let expanded: Bool
     let interrupting: Bool
     let showPIDColumn: Bool
-    let toggle: () -> Void
     let onInterrupt: () -> Void
     @ViewState private var copied = false
+    @ViewState private var showingDetails = false
 
     private var symbol: String {
         switch item.kind {
@@ -467,16 +530,14 @@ private struct AgentObservationRow: View {
         }
     }
 
-    private var primary: String { item.project ?? item.toolContext ?? item.title }
+    private var primary: String { item.title }
 
     private var secondary: String {
         guard item.kind == .work else { return item.detail }
-        // A classified label such as Inline Python already identifies its
-        // interpreter; repeating that information is hard to scan at 620pt.
-        let context = item.project == nil ? nil : item.toolContext.flatMap {
+        let context = item.toolContext.flatMap {
             item.title.localizedStandardContains($0) ? nil : $0
         }
-        let values = [context, item.title]
+        let values = [item.project, item.provider?.title, context]
             .compactMap { $0 }
             .filter { $0.localizedCaseInsensitiveCompare(primary) != .orderedSame }
         if !values.isEmpty { return values.joined(separator: " · ") }
@@ -491,17 +552,21 @@ private struct AgentObservationRow: View {
     private var cpu: String? {
         item.cpuPercent.map { String(format: $0 < 10 ? "%.1f%%" : "%.0f%%", $0) }
     }
+    private var parent: String? {
+        let fields = [item.parentName, item.parentPID.map { "PID \($0)" }].compactMap { $0 }
+        return fields.isEmpty ? nil : fields.joined(separator: " · ")
+    }
 
     private var stopUnavailableReason: String? {
         switch item.kind {
         case .work:
             return item.pid != nil && item.identity != nil
                 ? nil
-                : "Stop unavailable: process group not verified."
+                : "The process group could not be verified for a safe stop."
         case .service:
             return "Tool services are read-only here."
         case .host:
-            return "Codex runtimes are read-only here."
+            return "Agent runtimes are read-only here."
         case .unavailable:
             return "There is no process to stop."
         }
@@ -513,29 +578,16 @@ private struct AgentObservationRow: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: Self.columnSpacing) {
-                Button(action: toggle) { rowLabel }
-                    .buttonStyle(WorkspaceButton(selected: expanded))
-                    .accessibilityLabel("\(primary), \(secondary)")
-                    .accessibilityValue(accessibleSummary)
-                    .accessibilityHint(expanded ? "Hide process details" : "Show process details")
-                    .accessibilityAddTraits(expanded ? .isSelected : [])
-                    .accessibilityIdentifier("agents.row.\(item.id)")
-                rowActions
-            }
-            .padding(.trailing, Self.horizontalInset)
-
-            if expanded {
-                inspector
-            }
+        HStack(spacing: Self.columnSpacing) {
+            rowLabel
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("\(primary), \(secondary)")
+                .accessibilityValue(accessibleSummary)
+                .accessibilityIdentifier("agents.row.\(item.id)")
+            rowActions
         }
-        .background {
-            if expanded {
-                RoundedRectangle(cornerRadius: WorkspaceStyle.groupRadius)
-                    .fill(WorkspaceStyle.group)
-            }
-        }
+        .padding(.trailing, Self.horizontalInset)
+        .id(item.id)
         .task(id: copied) {
             guard copied else { return }
             try? await Task.sleep(for: .seconds(1.4))
@@ -581,11 +633,6 @@ private struct AgentObservationRow: View {
                     .foregroundStyle(WorkspaceStyle.mutedInk)
                     .frame(width: Self.pidWidth, alignment: .trailing)
             }
-            Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(WorkspaceStyle.mutedInk)
-                .frame(width: Self.disclosureWidth)
-                .accessibilityHidden(true)
         }
         .font(.callout.monospacedDigit())
         .lineLimit(1)
@@ -598,14 +645,18 @@ private struct AgentObservationRow: View {
         let size = memory.map { "RAM \($0)" } ?? "RAM unavailable"
         let processID = pid.map { "PID \($0)" }
             ?? (copyablePIDs.isEmpty ? "PID unavailable" : "\(copyablePIDs.count) process IDs")
-        return [size, processID, expanded ? "Expanded" : "Collapsed"].joined(separator: ", ")
+        return [size, processID].joined(separator: ", ")
     }
 
     private var inspector: some View {
         VStack(alignment: .leading, spacing: 10) {
+            Text(verbatim: primary)
+                .font(.headline)
+                .accessibilityAddTraits(.isHeader)
+                .lineLimit(2)
             if item.kind == .work {
                 inspectorPair(
-                    ("Command", item.title), ("Project", item.project)
+                    ("Project", item.project), ("Provider", item.provider?.title)
                 )
                 inspectorPair(
                     ("Classification", item.toolContext ?? item.kind.title),
@@ -619,11 +670,17 @@ private struct AgentObservationRow: View {
                 }
             } else {
                 inspectorPair(
-                    ("Classification", item.kind.title), ("PID", pid)
+                    ("Provider", item.provider?.title ?? item.kind.title), ("PID", pid)
                 )
                 if memory != nil || cpu != nil {
                     inspectorPair(("RAM", memory), ("CPU", cpu))
                 }
+            }
+            if let folder = item.projectFolder {
+                inspectorFact("Project folder", folder)
+            }
+            if let parent {
+                inspectorFact("Parent process", parent)
             }
             if copyablePIDs.count > 1 {
                 inspectorFact("Process IDs", copyablePIDs.map(String.init).joined(separator: " · "))
@@ -638,6 +695,7 @@ private struct AgentObservationRow: View {
         .padding(.horizontal, 13)
         .padding(.top, 11)
         .padding(.bottom, 12)
+        .frame(width: 326, alignment: .leading)
     }
 
     @ViewBuilder private func inspectorPair(_ first: (String, String?), _ second: (String, String?)) -> some View {
@@ -670,60 +728,48 @@ private struct AgentObservationRow: View {
     }
 
     private var rowActions: some View {
-        HStack(spacing: Self.actionSpacing) {
-            copyPIDButton
-            if interrupting {
-                ProgressView()
-                    .controlSize(.mini)
-                    .frame(width: Self.stopWidth, height: 28)
-                    .accessibilityLabel("Stopping \(primary)")
-                    .accessibilityIdentifier("agents.interrupt-progress.\(item.id)")
-                    .help("Waiting for this command to exit")
-            } else if stopUnavailableReason == nil {
-                Button(role: .destructive, action: onInterrupt) {
-                    Text("Stop…")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(WorkspaceStyle.ink)
-                        .frame(width: Self.stopWidth, height: 28)
-                }
-                .buttonStyle(WorkspaceButton(restingFill: true))
-                .accessibilityLabel(pid.map { "Stop \(primary), PID \($0)" } ?? "Stop \(primary)")
-                .accessibilityHint("Opens confirmation before interrupting the command.")
-                .accessibilityIdentifier("agents.interrupt.\(item.id)")
-                .help("Request a stop for this command and its verified child processes")
-            } else {
-                Color.clear.frame(width: Self.stopWidth, height: 28)
-                    .accessibilityHidden(true)
+        WorkspaceRowActions {
+            WorkspaceRowAction("Reveal project in Finder", symbol: "folder",
+                               unavailableReason: item.projectFolder == nil ? "No project folder was verified for this process." : nil) {
+                guard let path = item.projectFolder else { return }
+                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path, isDirectory: true)])
             }
+            .accessibilityIdentifier("agents.reveal.\(item.id)")
+        } copy: {
+            copyPIDButton
+        } extra: {
+            WorkspaceRowAction("Process details", symbol: "info.circle", selected: showingDetails) {
+                showingDetails.toggle()
+            }
+            .accessibilityIdentifier("agents.details.\(item.id)")
+            .popover(isPresented: $showingDetails, arrowEdge: .trailing) {
+                FittingScrollView { inspector }
+                    .frame(width: 326)
+                    .frame(maxHeight: 340)
+            }
+        } stop: {
+            WorkspaceRowAction("Stop \(primary)…", symbol: "stop.circle", role: .destructive,
+                               unavailableReason: stopUnavailableReason,
+                               pending: interrupting ? "Waiting for this command to exit." : nil,
+                               hint: "Requests a stop for this command and its verified child processes.") {
+                onInterrupt()
+            }
+            .accessibilityIdentifier("agents.interrupt.\(item.id)")
         }
-        .frame(width: Self.actionWidth, alignment: .leading)
     }
 
     private var copyPIDButton: some View {
         let copyTitle = copyablePIDs.count > 1 ? "Copy \(copyablePIDs.count) PIDs" : "Copy PID"
-        return Group {
-            if !copyablePIDs.isEmpty {
-                Button {
-                    let board = NSPasteboard.general
-                    board.clearContents()
-                    if board.setString(copyablePIDs.map(String.init).joined(separator: "\n"), forType: .string) {
-                        copied = true
-                    }
-                } label: {
-                    Image(systemName: copied ? "checkmark" : "document.on.document")
-                        .font(.system(size: 12, weight: .medium))
-                        .frame(width: Self.copyWidth, height: 30)
-                }
-                .buttonStyle(WorkspaceButton())
-                .accessibilityLabel(copyTitle)
-                .accessibilityValue(copied ? "Copied" : "")
-                .accessibilityIdentifier("agents.copy-pid.\(item.id)")
-                .help(copied ? "Copied" : copyTitle)
-            } else {
-                Color.clear.frame(height: 30).accessibilityHidden(true)
+        return WorkspaceRowAction(copied ? "Copied" : copyTitle,
+                                  symbol: copied ? "checkmark" : "document.on.document",
+                                  unavailableReason: copyablePIDs.isEmpty ? "No process IDs available." : nil) {
+            let board = NSPasteboard.general
+            board.clearContents()
+            if board.setString(copyablePIDs.map(String.init).joined(separator: "\n"), forType: .string) {
+                copied = true
             }
         }
-        .frame(width: Self.copyWidth)
+        .accessibilityIdentifier("agents.copy-pid.\(item.id)")
     }
 }
 
@@ -828,9 +874,11 @@ private struct EmptyStateView: View {
 }
 
 private struct ProcessRowSurface: ViewModifier {
+    var horizontalInset: CGFloat = 4
+
     func body(content: Content) -> some View {
         content
-            .padding(.horizontal, 4)
+            .padding(.horizontal, horizontalInset)
             .padding(.vertical, 7)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -888,9 +936,12 @@ private struct ActivityProcessRow: View {
 private struct ProcessRow: View {
     @EnvironmentObject private var model: AppModel
     let process: DevProcess
+    var usesDirectActions = false
     var configureRestart: (DevProcess) -> Void
     @ViewState private var confirmingAction = false
     @ViewState private var confirmingRestart = false
+    @ViewState private var showingLogs = false
+    @ViewState private var copiedURL = false
     private var pending: String? { model.pendingLocalActions[process.pid] }
 
     var body: some View {
@@ -898,69 +949,39 @@ private struct ProcessRow: View {
             HStack(spacing: 10) {
                 StatusDot(cpuPercent: process.resources.cpuPercent)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(verbatim: process.name)
+                    if process.name.hasPrefix("@"), let package = process.name.split(separator: "/").last {
+                        ViewThatFits(in: .horizontal) {
+                            Text(verbatim: process.name).fixedSize(horizontal: true, vertical: false)
+                            Text(verbatim: String(package)).lineLimit(1)
+                        }
                         .font(.body.weight(.medium))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    HStack(spacing: 7) {
-                        Button(process.urlString) { model.open(process) }
-                            .buttonStyle(.link)
-                            .help("Open in browser")
-                        Text(verbatim: "PID \(process.pid)")
-                            .foregroundStyle(.secondary)
-                    }
-                    .font(.caption.monospacedDigit())
-                    .lineLimit(1)
-                }
-                Spacer(minLength: 6)
-                ResourceMonitor(resources: process.resources)
-                Menu {
-                    Button("Open in Browser") { model.open(process) }
-                    Button("Copy URL") { model.copyURL(process) }
-                    Button("Reveal in Finder") { model.revealProjectFolder(process) }
-                        .disabled(process.cwd == nil)
-                    Divider()
-                    if process.canRestart {
-                        Button("Restart…") { confirmingRestart = true; confirmingAction = true }
-                            .disabled(!process.canStop || pending != nil)
+                        .accessibilityLabel(process.name)
+                        .help(process.name)
                     } else {
-                        Button("Set up restart…") { configureRestart(process) }
+                        Text(verbatim: process.name)
+                            .font(.body.weight(.medium))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
                     }
-                    Button("Stop…", role: .destructive) { confirmingRestart = false; confirmingAction = true }
-                        .disabled(!process.canStop || pending != nil)
-                    if let note = pending ?? process.stopUnavailableReason {
-                        Text(verbatim: note)
-                    }
-                } label: {
-                    Group {
-                        if pending != nil { ProgressView().controlSize(.mini) }
-                        else { Image(systemName: "ellipsis.circle") }
-                    }
-                    .frame(width: 17, height: 18)
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .accessibilityLabel("Actions for \(process.name) on port \(process.port)")
-                .accessibilityValue(pending ?? "")
-                .help(pending ?? "Process actions")
-                .confirmationDialog(
-                    "\(confirmingRestart ? "Restart" : "Stop") \(process.name) on port \(process.port)?",
-                    isPresented: $confirmingAction
-                ) {
-                    if confirmingRestart {
-                        Button("Restart", role: .destructive) { model.restart(process) }
+                    if usesDirectActions {
+                        ViewThatFits(in: .horizontal) {
+                            addressLine(process.urlString).fixedSize(horizontal: true, vertical: false)
+                            addressLine(":\(process.port)").fixedSize(horizontal: true, vertical: false)
+                        }
                     } else {
-                        Button("Stop Process", role: .destructive) { model.stop(process) }
+                        addressLine(process.urlString)
                     }
-                    Button("Cancel", role: .cancel) {}
-                } message: {
-                    Text(confirmingRestart
-                         ? "Starts the project again only after the old process group exits and the port is free."
-                         : "Requests a stop for PID \(process.pid) and its verified child processes.")
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                ResourceMonitor(resources: process.resources, stableColumns: usesDirectActions)
+                if usesDirectActions {
+                    directActions
+                } else {
+                    processMenu
                 }
             }
-            if let projectID = process.projectID {
+            if !usesDirectActions, let projectID = process.projectID {
                 DisclosureGroup {
                     LogView(text: model.runner.logs(for: projectID))
                         .padding(.top, 4)
@@ -972,18 +993,139 @@ private struct ProcessRow: View {
                 .padding(.leading, 18)
             }
         }
-        .modifier(ProcessRowSurface())
+        .modifier(ProcessRowSurface(horizontalInset: usesDirectActions ? AgentObservationRow.horizontalInset : 4))
+        .task(id: copiedURL) {
+            guard copiedURL else { return }
+            try? await Task.sleep(for: .seconds(1.4))
+            if !Task.isCancelled { copiedURL = false }
+        }
+    }
+
+    private func addressLine(_ address: String) -> some View {
+        HStack(spacing: 7) {
+            Button(address) { model.open(process) }
+                .buttonStyle(.link)
+                .help("Open \(process.urlString) in browser")
+                .accessibilityLabel("Open \(process.urlString)")
+            Text(verbatim: "PID \(process.pid)")
+                .foregroundStyle(WorkspaceStyle.mutedInk)
+        }
+        .font(.caption.monospacedDigit())
+        .lineLimit(1)
+    }
+
+    private var directActions: some View {
+        WorkspaceRowActions {
+            WorkspaceRowAction("Reveal project in Finder", symbol: "folder",
+                               unavailableReason: process.cwd == nil ? "No project folder was found for this process." : nil) {
+                model.revealProjectFolder(process)
+            }
+            .accessibilityIdentifier("dev.reveal.\(process.id)")
+        } copy: {
+            WorkspaceRowAction(copiedURL ? "Copied" : "Copy URL",
+                               symbol: copiedURL ? "checkmark" : "document.on.document") {
+                model.copyURL(process)
+                copiedURL = true
+            }
+            .accessibilityIdentifier("dev.copy-url.\(process.id)")
+        } extra: {
+            processMenu
+        } stop: {
+            WorkspaceRowAction("Stop \(process.name)…", symbol: "stop.circle", role: .destructive,
+                               unavailableReason: process.stopUnavailableReason,
+                               pending: pending, hint: "Opens a confirmation before stopping this process.") {
+                requestAction(restart: false)
+            }
+            .accessibilityIdentifier("dev.stop.\(process.id)")
+        }
+    }
+
+    private var processMenu: some View {
+        Menu {
+            if !usesDirectActions {
+                Button("Open in Browser") { model.open(process) }
+                Button("Copy URL") { model.copyURL(process) }
+                Button("Reveal in Finder") { model.revealProjectFolder(process) }
+                    .disabled(process.cwd == nil)
+                Divider()
+            }
+            if process.canRestart {
+                Button("Restart…") { requestAction(restart: true) }
+                    .disabled(!process.canStop || pending != nil)
+            } else {
+                Button("Set up restart…") { configureRestart(process) }
+            }
+            if usesDirectActions, process.projectID != nil {
+                Button("Show Logs") { showingLogs = true }
+            }
+            if !usesDirectActions {
+                Button("Stop…", role: .destructive) { requestAction(restart: false) }
+                    .disabled(!process.canStop || pending != nil)
+            }
+            if let note = pending ?? process.stopUnavailableReason {
+                Text(verbatim: note)
+            }
+        } label: {
+            Group {
+                if !usesDirectActions, pending != nil { ProgressView().controlSize(.mini) }
+                else {
+                    Image(systemName: "ellipsis.circle")
+                        .font(.system(size: usesDirectActions ? 13 : 12, weight: .medium))
+                }
+            }
+            .frame(width: usesDirectActions ? WorkspaceRowActionMetrics.size : 17,
+                   height: usesDirectActions ? WorkspaceRowActionMetrics.size : 18)
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .accessibilityLabel("Actions for \(process.name) on port \(process.port)")
+        .accessibilityValue(pending ?? "")
+        .help("More actions")
+        .popover(isPresented: $showingLogs, arrowEdge: .trailing) {
+            if let projectID = process.projectID {
+                ScrollView {
+                    LogView(text: model.runner.logs(for: projectID))
+                        .padding(12)
+                }
+                .frame(width: 420, height: 250)
+            }
+        }
+        .confirmationDialog(
+            "\(confirmingRestart ? "Restart" : "Stop") \(process.name) on port \(process.port)?",
+            isPresented: $confirmingAction
+        ) {
+            if confirmingRestart {
+                Button("Restart", role: .destructive) { model.restart(process) }
+            } else {
+                Button("Stop Process", role: .destructive) { model.stop(process) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(confirmingRestart
+                 ? "Starts the project again only after the old process group exits and the port is free."
+                 : "Requests a stop for PID \(process.pid) and its verified child processes.")
+        }
+    }
+
+    private func requestAction(restart: Bool) {
+        guard process.canStop, pending == nil else { return }
+        confirmingRestart = restart
+        confirmingAction = true
     }
 }
-
 private struct ResourceMonitor: View {
     let resources: ResourceUsage
     var memoryLabel: String = "RAM"
+    var stableColumns = false
 
     var body: some View {
         HStack(spacing: 12) {
             Text("CPU \(cpuText)")
+                .frame(width: stableColumns ? 57 : nil, alignment: .trailing)
             Text("\(memoryLabel) \(memoryText)")
+                .frame(width: stableColumns ? 62 : nil, alignment: .trailing)
         }
         .font(.caption.monospacedDigit())
         .foregroundStyle(.secondary)
