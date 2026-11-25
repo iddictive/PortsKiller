@@ -25,27 +25,65 @@ jobs:
           fetch-depth: 0
 
       - name: Resolve Version
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
           source scripts/version.sh
-          if [ -n "${{ github.event.inputs.version }}" ]; then
-            VERSION="${{ github.event.inputs.version }}"
+          if [ -n "${REQUESTED_VERSION:-}" ]; then
+            VERSION="$REQUESTED_VERSION"
           elif [[ "$GITHUB_REF_TYPE" = "tag" ]]; then
             VERSION="${GITHUB_REF_NAME#v}"
           else
             VERSION="$(next_release_version)"
           fi
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           echo "PORTSKILLER_VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Test
+        run: swift test
 
       - name: Build App and DMG
         run: scripts/build-app.sh
 
+      - name: Verify packaged DMG
+        run: |
+          set -euo pipefail
+          image=".build/PortsKiller-$PORTSKILLER_VERSION.dmg"
+          hdiutil verify "$image"
+          mount="$(mktemp -d)"
+          trap 'hdiutil detach "$mount" >/dev/null 2>&1 || true; rmdir "$mount"' EXIT
+          hdiutil attach "$image" -mountpoint "$mount" -readonly -nobrowse
+          app="$mount/PortsKiller.app"
+          codesign --verify --deep --strict "$app"
+          test "$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$app/Contents/Info.plist")" = "$PORTSKILLER_VERSION"
+          test "$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$app/Contents/Info.plist")" = com.md.PortsKiller
+          lipo -archs "$app/Contents/MacOS/PortsKiller"
+          "$app/Contents/MacOS/PortsKiller" --system-stats
+
+      - name: Prepare release notes
+        run: |
+          awk -v title="## $PORTSKILLER_VERSION" '
+            $0 == title { found=1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > .build/release-notes.md
+          if ! grep -q '[^[:space:]]' .build/release-notes.md; then
+            printf 'See the [changelog](https://github.com/iddictive/PortsKiller/blob/%s/CHANGELOG.md).\n' "$GITHUB_SHA" > .build/release-notes.md
+          fi
+          (cd .build && shasum -a 256 "PortsKiller-$PORTSKILLER_VERSION.dmg" > "PortsKiller-$PORTSKILLER_VERSION.dmg.sha256")
+
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
+          target_commitish: ${{ github.sha }}
           tag_name: v${{ env.PORTSKILLER_VERSION }}
           name: PortsKiller v${{ env.PORTSKILLER_VERSION }}
-          files: .build/PortsKiller-${{ env.PORTSKILLER_VERSION }}.dmg
+          body_path: .build/release-notes.md
+          files: |
+            .build/PortsKiller-${{ env.PORTSKILLER_VERSION }}.dmg
+            .build/PortsKiller-${{ env.PORTSKILLER_VERSION }}.dmg.sha256
+          fail_on_unmatched_files: true
           draft: false
           prerelease: false
         env:

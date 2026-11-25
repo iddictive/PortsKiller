@@ -51,8 +51,13 @@ final class ProcessScanner {
     private let packageScriptInspector = PackageScriptInspector()
 
     func scan(manualProjects: [ManualProject], mode: ProcessViewMode = .dev) -> [DevProcess] {
-        let listeners = listeningPorts()
+        let observedBefore = Date()
+        let listeners = listeningPorts() ?? []
         let processMap = processSnapshots()
+        let identities = Set(listeners.map(\.pid)).reduce(into: [Int32: ProcessIdentity]()) { result, pid in
+            guard let snapshot = processMap[pid] else { return }
+            result[pid] = Self.verifiedIdentity(for: snapshot, observedBefore: observedBefore)
+        }
         let cwdByPID = workingDirectories(for: Set(listeners.map(\.pid)))
         let childMap = processMap.values.reduce(into: [Int32: [Int32]]()) { partial, snapshot in
             partial[snapshot.parentPID, default: []].append(snapshot.pid)
@@ -71,9 +76,13 @@ final class ProcessScanner {
 
             if mode == .dev, kind != .dev { continue }
 
-            let matchedProject = manualProjects.first { project in
-                project.port == listener.port || normalized(project.cwd) == normalized(cwd ?? "")
+            let compatibleProjects = manualProjects.filter { project in
+                guard let cwd else { return project.port == listener.port }
+                let directory = normalized(cwd)
+                let root = normalized(project.cwd)
+                return directory == root || directory.hasPrefix(root.hasSuffix("/") ? root : root + "/")
             }
+            let matchedProject = compatibleProjects.first { $0.port == listener.port } ?? compatibleProjects.first
 
             let projectName = matchedProject?.name
                 ?? mcpDisplayName(from: "\(initialCombined) \(combined)")
@@ -97,7 +106,9 @@ final class ProcessScanner {
                     kind: kind,
                     resources: aggregateResources(rootPID: listener.pid, snapshots: processMap, children: childMap),
                     projectID: matchedProject?.id,
-                    inferredRestartCommand: inferredRestartCommand
+                    inferredRestartCommand: inferredRestartCommand,
+                    identity: identities[listener.pid],
+                    memberPIDs: descendantsIncludingRoot(listener.pid, children: childMap).sorted()
                 )
             )
         }
@@ -112,6 +123,7 @@ final class ProcessScanner {
     }
 
     func scanActivity(limit: Int = 18) -> [ActivityProcess] {
+        let observedBefore = Date()
         let snapshots = processSnapshots()
         guard !snapshots.isEmpty, limit > 0 else { return [] }
 
@@ -128,7 +140,7 @@ final class ProcessScanner {
             coveredSimulatorPIDs.formUnion(familyPIDs)
             let isAndroid = root.command.lowercased().contains("qemu-system")
                 || root.command.lowercased().contains("-avd ")
-            let identity = ProcessIdentityReader.read(pid: root.pid)
+            let identity = Self.verifiedIdentity(for: root, observedBefore: observedBefore)
             simulatorEntries.append(
                 ActivityProcess(
                     id: "simulator:\(root.pid)",
@@ -138,7 +150,7 @@ final class ProcessScanner {
                     kind: .simulator,
                     resources: aggregateResources(rootPID: root.pid, snapshots: snapshots, children: children),
                     processCount: familyPIDs.count,
-                    targetPIDs: [root.pid],
+                    targetPIDs: [root.pid] + familyPIDs.filter { $0 != root.pid }.sorted(),
                     identity: identity,
                     canStop: identity?.ownerUID == UInt32(getuid())
                 )
@@ -195,9 +207,37 @@ final class ProcessScanner {
         return selected.sorted(by: resourceSort)
     }
 
-    private func listeningPorts() -> [ListeningPort] {
-        let result = Shell.run("/usr/sbin/lsof", ["-nP", "-iTCP", "-sTCP:LISTEN", "-FpPnTc"])
-        guard result.status == 0 else { return [] }
+    /// Recheck the listener on the specific port before sending a signal.
+    /// Return nil when macOS could not answer, not "port free."
+    func liveListenerPIDs(on port: Int) -> Set<Int32>? {
+        guard (1...65535).contains(port), let listeners = listeningPorts(port: port) else { return nil }
+        return Set(listeners.filter { $0.port == port }.map(\.pid))
+    }
+
+    static func permitsLocalAction(pid: Int32) -> Bool {
+        guard pid > 1, pid != getpid() else { return false }
+        var path = [UInt8](repeating: 0, count: Int(MAXPATHLEN) * 4)
+        let size = UInt32(path.count)
+        guard path.withUnsafeMutableBytes({ proc_pidpath(pid, $0.baseAddress, size) }) > 0 else { return false }
+        let executable = String(decoding: path.prefix(while: { $0 != 0 }), as: UTF8.self)
+        let sample = AgentActivityScanner.Sample(pid: pid, parent: 0, executable: executable, cpu: nil)
+        return !sample.isCodex && !sample.isInspector && sample.service == nil
+            && !executable.hasPrefix("/System/Library/")
+    }
+
+    private static func verifiedIdentity(for snapshot: ProcessSnapshot, observedBefore: Date) -> ProcessIdentity? {
+        guard snapshot.ownerUID == getuid(), permitsLocalAction(pid: snapshot.pid),
+              let identity = ProcessIdentityReader.read(pid: snapshot.pid), identity.ownerUID == snapshot.ownerUID else { return nil }
+        let started = Double(identity.startTimeSeconds) + Double(identity.startTimeMicroseconds) / 1_000_000
+        // A reused PID born after collection began cannot describe this row.
+        return identity.startTimeSeconds > 0 && started <= observedBefore.timeIntervalSince1970 ? identity : nil
+    }
+
+    private func listeningPorts(port: Int? = nil) -> [ListeningPort]? {
+        let query = port.map { "-iTCP:\($0)" } ?? "-iTCP"
+        let result = Shell.run("/usr/sbin/lsof", ["-nP", query, "-sTCP:LISTEN", "-FpPnTc"])
+        if result.status == 1 && result.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return [] }
+        guard result.status == 0 else { return nil }
 
         var currentPID: Int32?
         var currentCommand = ""
@@ -221,7 +261,7 @@ final class ProcessScanner {
             }
         }
 
-        return ports
+        return ports.isEmpty ? nil : ports
     }
 
     private func processSnapshots() -> [Int32: ProcessSnapshot] {

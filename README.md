@@ -1,103 +1,67 @@
 <p align="center">
-  <img src="assets/app-icon.png" alt="PortsKiller" width="96">
+  <img src="assets/app-icon.png" alt="" width="96">
 </p>
 
 <h1 align="center">PortsKiller</h1>
 
-<p align="center">Find what owns a port. Inspect, stop, and restart local development processes from the macOS menu bar.</p>
+<p align="center">A macOS menu bar app for quitting running apps, seeing what Codex is running locally, and freeing up development ports.</p>
 
 <p align="center">
   <a href="https://github.com/iddictive/PortsKiller/releases/latest">Download for macOS</a> ·
-  <a href="#what-it-does">Features</a> ·
+  <a href="#quick-start">Quick start</a> ·
   <a href="#build-from-source">Build from source</a> ·
+  <a href="CHANGELOG.md">Changelog</a> ·
   <a href="#русский">Русский</a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/iddictive/PortsKiller/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/iddictive/PortsKiller"></a>
-  <img alt="macOS 13 or newer" src="https://img.shields.io/badge/macOS-13%2B-333333">
-</p>
-
-PortsKiller brings local agent activity, servers, and process controls into one native window. Use **Agents** for commands observed under Codex on this Mac, **Dev** for likely development servers, **Ports** for the full TCP listener list, or **Activity** for resource-heavy processes, simulators, and emulators.
-
-<p align="center">
-  <img src="assets/interface-menu.png" alt="PortsKiller showing local listeners with process controls" width="760">
+  <img src="assets/portskiller-activity.png" alt="The PortsKiller process window on macOS" width="900">
 </p>
 
 ## Quick start
 
-1. Download the DMG from [Releases](https://github.com/iddictive/PortsKiller/releases/latest).
-2. Move PortsKiller to Applications and launch it.
-3. Open PortsKiller from the menu bar. **Agents** shows local commands; use **Dev**, **Ports**, or **Activity** to inspect other processes.
-4. To save a runnable project, choose **Add Project**, select its folder, and choose its launch command.
+1. Download the DMG from [GitHub Releases](https://github.com/iddictive/PortsKiller/releases/latest).
+2. Drag PortsKiller to Applications and open it.
+3. **Right-click** the menu bar icon to find a running app and quit it. **Left-click** to open the process window.
 
-Requires macOS 13 or newer. Release builds are ad-hoc signed and are not notarized; macOS may require first-launch confirmation.
+The release DMG is for Apple silicon on macOS 13 or later. The app is ad-hoc signed, not notarized. macOS may ask you to approve the first launch.
 
-## What it does
+## Find what’s running
 
-- **See local agent work.** Commands running under Codex are grouped separately from idle-capable runtimes and tool services. Search by executable, verified project name, or PID. No command arguments or chat content are read. This is not a list of chats, cloud tasks, or their on/off status.
-- **Find the listener.** Switch between development servers, all TCP listeners, and resource-heavy activity.
-- **Inspect the process.** See its port, PID, command, project folder, uptime, CPU, physical RAM, and swap.
-- **Act from the same window.** Open localhost, reveal the folder, stop an eligible process tree, or restart a saved project.
-- **Save a project once.** Select its folder and a package script; PortsKiller detects npm, pnpm, yarn, or bun.
-- **Read session logs.** Inspect stdout and stderr for processes launched by PortsKiller.
-- **Watch resources.** Put CPU or RAM in the menu bar and inspect simulator and emulator activity.
+**Running apps.** Right-click the menu bar icon, type an app’s name, and choose **Quit**. PortsKiller asks the app to quit normally, so the app can still prompt to save your work. It won’t force quit.
 
-<p align="center">
-  <img src="assets/system-resources.png" alt="CPU, physical memory, and swap usage in PortsKiller" width="680">
-</p>
+**Agents.** See local commands PortsKiller can trace to Codex. Search by command, project, or PID, or click **RAM** to sort each group by memory. Expand a row to see what’s running, when it started, its CPU and memory, and the process IDs you can copy. Eligible command groups can be stopped after confirmation. Codex and helper services, such as Computer Use, hooks, and the artifact runtime, appear separately and are read-only. This view observes local processes. It does not read chats or show cloud task status.
 
-## How it works
+**Dev** shows likely development servers and **Ports** lists detected TCP listeners. Find what owns a port, open the localhost URL, reveal the project folder, or stop an eligible process. **Activity** shows resource-heavy local processes, simulators, and emulators even when they don’t listen on a port. For a quick resource check, the menu bar can show CPU or RAM.
 
-PortsKiller scans listening TCP sockets with the macOS `lsof` command and enriches each listener with process data from `ps`, Mach APIs, and the process tree. Dev mode applies heuristic classification, so use Ports mode when you need the complete listener inventory.
+## Run a project again
 
-When you add a project, PortsKiller reads its `package.json` and lockfile, suggests an available script and port, and stores the resulting `cwd + command`. Start and restart actions run that command with `zsh`; the required runtime and package manager must already be available on your Mac.
+Open **Add Project**, pick a folder, and choose a launch command. For projects with a `package.json`, PortsKiller offers the available scripts and uses lockfiles to suggest npm, pnpm, yarn, or bun. Start or restart a saved project from the same window. Commands run with your installed tools, and PortsKiller shows stdout and stderr for processes it starts.
 
-Stop actions are intentionally limited to eligible non-system processes. Simulator actions also validate the current process identity before terminating a process tree.
-
-Restart is available for saved projects and detected launch commands. When the command cannot be inferred, the setup button opens Add Project with the process folder and port filled in; enter its launch command to enable restart. Session recovery is currently disabled behind a feature flag.
-
-Preferences group general settings, software updates, and saved projects. Update dialogs show release notes from the release or its tagged changelog. Automatic checks and downloads are configurable; installation still asks for confirmation. Updates run only from `/Applications/PortsKiller.app`, verify the staged bundle identity, signature integrity, and version, then back up the current app and roll back if launch fails. Builds use ad-hoc signing, not Developer ID authentication or notarization.
+If PortsKiller can’t infer a restart command for an existing listener, open project setup from its row to add one. **Settings** is where you manage saved projects, menu bar metrics, and updates. Updates for the copy in Applications show release notes and ask before installing.
 
 ## Build from source
 
-Requirements:
-
-- macOS 13 or newer
-- Xcode Command Line Tools
-- Swift 6 toolchain
-
-Build and test the Swift package:
+Use macOS 13 or later, Xcode Command Line Tools, and Swift 6:
 
 ```bash
 swift build
 swift test
-```
-
-Create a runnable app bundle and versioned DMG:
-
-```bash
 scripts/build-app.sh
 open .build/PortsKiller.app --args --show-agents
 ```
 
-The packaging script creates `.build/PortsKiller.app` and `.build/PortsKiller-<version>.dmg` with an ad-hoc code signature.
+The packaging script writes the app bundle and a versioned DMG to `.build/`. Set `PORTSKILLER_VERSION` to package a specific version locally. The [release workflow](.github/workflows/release.yml) packages and publishes the DMG on GitHub.
 
-The release workflow builds and publishes a DMG on pushes to `main`, version tags, or manual dispatch. `scripts/version.sh` owns version selection: normal branch releases increment the minor version from the latest tag. Set `PORTSKILLER_VERSION` for an explicit local package version. See [CHANGELOG.md](CHANGELOG.md) for release changes.
-
-## Command-line diagnostics
-
-The packaged executable also supports focused scanner output without opening the menu bar interface:
+To inspect the same local scanner data without opening the window:
 
 ```bash
-.build/debug/PortsKiller --scan-once
-.build/debug/PortsKiller --scan-all
-.build/debug/PortsKiller --scan-activity
-.build/debug/PortsKiller --scan-agents
-.build/debug/PortsKiller --system-stats
+swift run PortsKiller --scan-agents
+swift run PortsKiller --scan-once    # likely development listeners
+swift run PortsKiller --scan-all     # all detected TCP listeners
+swift run PortsKiller --scan-activity
+swift run PortsKiller --system-stats
 ```
-
-These commands are useful when checking which local process is using a port, comparing Dev and Ports detection, or inspecting total CPU, physical memory, and swap usage.
 
 ---
 
@@ -105,20 +69,10 @@ These commands are useful when checking which local process is using a port, com
 
 ## Русский
 
-PortsKiller — нативное приложение для строки меню macOS, которое показывает локальные TCP-порты и процессы разработчика и позволяет управлять ими без постоянной работы с `lsof`, `ps` и Activity Monitor.
+PortsKiller живёт в строке меню macOS. Правый клик открывает поиск по запущенным приложениям и кнопку **Quit**. Это обычное завершение: приложение может предложить сохранить изменения, принудительно его никто не закроет.
 
-Приложение показывает порт, PID, localhost URL, команду, рабочую папку, uptime, CPU, физическую RAM и swap. Можно открыть или скопировать URL, показать папку в Finder, остановить подходящий процесс или перезапустить сохранённый проект.
+Левый клик открывает окно процессов. Во вкладке **Agents** видно, какие команды Codex запустил на этом Mac. Список можно искать и сортировать по RAM, а в раскрытой строке посмотреть контекст, время запуска и PID. Рантаймы и служебные процессы вынесены отдельно, останавливать их через **Agents** нельзя. Содержимое чатов и состояние облачных задач здесь не отображаются.
 
-Три режима помогают разделить задачи:
+**Dev** показывает вероятные серверы разработки, **Ports** — найденные TCP-порты, **Activity** — тяжёлые процессы, симуляторы и эмуляторы. Через **Add Project** можно сохранить папку и команду, чтобы запускать проект из того же окна и видеть его логи.
 
-- **Dev** — вероятные JavaScript-серверы и инструменты локальной разработки;
-- **Ports** — полный список найденных TCP listeners;
-- **Activity** — симуляторы, эмуляторы и тяжёлые процессы без привязки к порту.
-
-Проект добавляется через выбор папки: PortsKiller читает `package.json`, определяет npm, pnpm, yarn или bun и предлагает доступные scripts. Для процессов, запущенных самим приложением, доступны логи текущей сессии.
-
-В строке меню можно оставить CPU, RAM или только иконку. Физическая память и swap показываются отдельно, а небольшая точка появляется только при активном swap.
-
-Основное окно можно растягивать за края; размер сохраняется. Действия доступны прямо в карточке процесса. Если команда перезапуска неизвестна, кнопка настройки открывает добавление проекта. Автообновление установленной копии показывает изменения релиза, проверяет загруженное приложение и восстанавливает предыдущую версию при неудачном запуске. Session recovery отключён.
-
-Скачать готовую сборку: [GitHub Releases](https://github.com/iddictive/PortsKiller/releases/latest).
+[Скачать DMG](https://github.com/iddictive/PortsKiller/releases/latest) · macOS 13 или новее. Перенесите приложение в Applications. При первом запуске macOS может запросить подтверждение.

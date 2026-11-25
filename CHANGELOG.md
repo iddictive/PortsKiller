@@ -1,9 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.5.0
 
-- Agents shows commands observed on this Mac, separate from the Codex runtime and tool services.
-- The native window has searchable Agents, Dev, Ports, and Activity views, with explicit confirmation before stopping a process.
+- Right-click the menu bar icon to search running apps and ask them to quit normally. Left-click opens the process window.
+- Agents now groups local Codex commands separately from runtimes and services. Sort by RAM, expand rows for context, and copy individual or grouped process IDs.
+- Stop eligible local command groups after confirmation. Codex runtimes and services such as Computer Use, hooks, and the artifact runtime remain read-only.
+- Search across Agents, Dev, Ports, and Activity in the updated native process window.
 
 ## 0.2.0
 

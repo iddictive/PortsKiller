@@ -25,10 +25,17 @@ final class AppModel: ObservableObject {
         case agents([AgentActivity])
     }
 
-    @Published var processes: [DevProcess] = []
-    @Published var activityProcesses: [ActivityProcess] = []
-    @Published private(set) var agentActivities: [AgentActivity] = []
-    @Published private(set) var agentActivityUpdatedAt: Date?
+    private struct ScanSnapshot {
+        let result: ScanResult
+        let completedAt: Date
+    }
+
+    @Published private var scans: [ProcessViewMode: ScanSnapshot] = [:]
+    @Published private(set) var agentActionMessage: String?
+    @Published private(set) var stoppingAgentIDs: Set<String> = []
+    @Published private(set) var pendingLocalActions: [Int32: String] = [:]
+    @Published private var listenerActionMessage: String?
+    @Published private var activityActionMessage: String?
     @Published var systemResources: SystemResourceUsage = .unavailable
     @Published var projects: [ManualProject] = []
     @Published var selectedLogProjectID: UUID?
@@ -40,7 +47,31 @@ final class AppModel: ObservableObject {
         didSet { menuBarMetricPreferences.save(menuBarMetric) }
     }
     @Published var processViewMode: ProcessViewMode = .agents {
-        didSet { refresh() }
+        didSet { if processViewMode != oldValue { refresh() } }
+    }
+
+    var activeScanCompletedAt: Date? { scans[processViewMode]?.completedAt }
+    var activeLocalActionMessage: String? {
+        switch processViewMode {
+        case .dev, .all: listenerActionMessage
+        case .activity: activityActionMessage
+        case .agents: nil
+        }
+    }
+
+    var processes: [DevProcess] {
+        guard case let .listeners(rows)? = scans[processViewMode]?.result else { return [] }
+        return rows
+    }
+
+    var activityProcesses: [ActivityProcess] {
+        guard case let .activity(rows)? = scans[.activity]?.result else { return [] }
+        return rows
+    }
+
+    var agentActivities: [AgentActivity] {
+        guard case let .agents(rows)? = scans[.agents]?.result else { return [] }
+        return rows
     }
 
     let runner = ManagedProcessRunner()
@@ -119,19 +150,7 @@ final class AppModel: ObservableObject {
             if generation == self.refreshGeneration,
                mode == self.processViewMode,
                capturedProjects == self.projects {
-                switch result {
-                case let .agents(rows):
-                    if self.agentActivities != rows { self.agentActivities = rows }
-                    self.agentActivityUpdatedAt = Date()
-                case let .listeners(processes):
-                    if self.processes != processes {
-                        self.processes = processes
-                    }
-                case let .activity(processes):
-                    if self.activityProcesses != processes {
-                        self.activityProcesses = processes
-                    }
-                }
+                self.scans[mode] = ScanSnapshot(result: result, completedAt: Date())
             }
 
             if self.refreshPending {
@@ -196,41 +215,170 @@ final class AppModel: ObservableObject {
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: project.cwd)])
     }
 
+    func stopAgent(_ item: AgentActivity) {
+        guard !stoppingAgentIDs.contains(item.id) else { return }
+        guard item.kind == .work, let pid = item.pid, let identity = item.identity,
+              agentActivities.contains(where: { $0.id == item.id && $0.identity == identity }) else {
+            agentActionMessage = "The command changed while confirmation was open. No stop signal sent."
+            refresh()
+            return
+        }
+        agentActionMessage = nil
+        stoppingAgentIDs.insert(item.id)
+        let controller = processController
+        Task { [weak self] in
+            let result = await Task.detached(priority: .userInitiated) {
+                await controller.interruptLocalCommand(rootPID: pid, expectedIdentity: identity,
+                                                       displayedPIDs: item.memberPIDs,
+                                                       permits: AgentActivityScanner.canInterrupt)
+            }.value
+            guard let self else { return }
+            self.stoppingAgentIDs.remove(item.id)
+            self.agentActionMessage = Self.interruptMessage(result, pid: pid)
+            self.refresh()
+        }
+    }
+
+    private static func interruptMessage(_ result: ProcessController.InterruptResult, pid: Int32) -> String {
+        switch result {
+        case .commandChanged:
+            return "PID \(pid) already exited or changed. No stop signal sent."
+        case .snapshotUnavailable:
+            return "Couldn’t read the process group for PID \(pid). No stop signal sent."
+        case .unsafeGroup:
+            return "Couldn’t verify a safe stop for PID \(pid). No stop signal sent."
+        case .noSignal:
+            return "Couldn’t send the stop request for PID \(pid)."
+        case let .requested(running, unconfirmed):
+            if running.isEmpty && unconfirmed.isEmpty {
+                return "Observed processes for PID \(pid) exited."
+            }
+            var notes = [String]()
+            if !running.isEmpty {
+                let summary = running.prefix(3).map(String.init).joined(separator: ", ")
+                let more = running.count > 3 ? " and \(running.count - 3) more" : ""
+                notes.append("still running: \(summary)\(more)")
+            }
+            if !unconfirmed.isEmpty {
+                notes.append("\(unconfirmed.count) unverified")
+            }
+            return "Stop requested for PID \(pid) (\(notes.joined(separator: "; ")))."
+        }
+    }
+
     func stop(_ process: DevProcess) {
-        processController.terminateTree(rootPID: process.pid)
-        refresh()
+        performListenerAction(process, restartProject: nil)
     }
 
     func stop(_ process: ActivityProcess) {
-        guard
-            process.canStop,
-            let pid = process.primaryPID,
-            let identity = process.identity
-        else { return }
-
+        guard let pid = process.primaryPID, pendingLocalActions[pid] == nil else { return }
+        guard process.canStop, let identity = process.identity,
+              activityProcesses.contains(where: { $0.id == process.id && $0.identity == identity }) else {
+            activityActionMessage = "The process changed. No stop signal sent."
+            refresh()
+            return
+        }
+        activityActionMessage = nil
+        pendingLocalActions[pid] = "Stopping…"
         let controller = processController
         Task { [weak self] in
-            _ = await Task.detached(priority: .userInitiated) {
-                controller.terminateValidatedTree(rootPID: pid, expectedIdentity: identity)
+            let result = await Task.detached(priority: .userInitiated) {
+                await controller.interruptLocalCommand(rootPID: pid, expectedIdentity: identity,
+                                                       displayedPIDs: process.targetPIDs,
+                                                       permits: ProcessScanner.permitsLocalAction)
             }.value
-            self?.refresh()
+            guard let self else { return }
+            self.pendingLocalActions[pid] = nil
+            self.activityActionMessage = Self.interruptMessage(result, pid: pid)
+            self.refresh()
         }
     }
 
     func restart(_ process: DevProcess) {
-        let project: ManualProject?
-        if let projectID = process.projectID {
-            project = projects.first(where: { $0.id == projectID })
-        } else {
-            project = process.inferredRestartProject
+        guard let project = restartProject(for: process) else {
+            listenerActionMessage = "No launch command is available for port \(process.port)."
+            return
         }
+        performListenerAction(process, restartProject: project)
+    }
 
-        guard let project else { return }
-        processController.terminateTree(rootPID: process.pid)
-        runner.start(project)
-        selectedLogProjectID = project.id
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
-            self?.refresh()
+    private func restartProject(for process: DevProcess) -> ManualProject? {
+        if let projectID = process.projectID { return projects.first(where: { $0.id == projectID }) }
+        return process.inferredRestartProject
+    }
+
+    private enum ListenerActionResult: Sendable {
+        case listenerUnverified, launchDirectoryUnavailable
+        case portInUse(Int), portUnverified(Int)
+        case interrupted(ProcessController.InterruptResult)
+    }
+
+    private func performListenerAction(_ process: DevProcess, restartProject project: ManualProject?) {
+        let pid = process.pid
+        guard pendingLocalActions[pid] == nil else { return }
+        guard process.canStop, let identity = process.identity,
+              processes.contains(where: { $0.id == process.id && $0.identity == identity && $0.canStop }) else {
+            listenerActionMessage = "The listener changed or could not be verified. No stop signal sent."
+            refresh()
+            return
+        }
+        let restarting = project != nil
+        listenerActionMessage = nil
+        pendingLocalActions[pid] = restarting ? "Restarting…" : "Stopping…"
+        let controller = processController
+        Task { [weak self] in
+            let outcome = await Task.detached(priority: .userInitiated) { () -> ListenerActionResult in
+                let scanner = ProcessScanner()
+                if let project {
+                    var directory: ObjCBool = false
+                    guard FileManager.default.fileExists(atPath: project.cwd, isDirectory: &directory),
+                          directory.boolValue else { return .launchDirectoryUnavailable }
+                }
+                guard scanner.liveListenerPIDs(on: process.port)?.contains(pid) == true else {
+                    return .listenerUnverified
+                }
+                let result = await controller.interruptLocalCommand(rootPID: pid, expectedIdentity: identity,
+                                                                    displayedPIDs: process.memberPIDs,
+                                                                    permits: ProcessScanner.permitsLocalAction)
+                if let project, result == .requested(running: [], unconfirmed: []) {
+                    for port in Set([process.port, project.port]).sorted() {
+                        guard let listeners = scanner.liveListenerPIDs(on: port) else { return .portUnverified(port) }
+                        guard listeners.isEmpty else { return .portInUse(port) }
+                    }
+                }
+                return .interrupted(result)
+            }.value
+            guard let self else { return }
+            self.pendingLocalActions[pid] = nil
+            let unchanged: Bool
+            if process.projectID != nil {
+                unchanged = self.restartProject(for: process) == project
+            } else {
+                unchanged = true
+            }
+            switch outcome {
+            case .listenerUnverified:
+                self.listenerActionMessage = "Couldn’t verify PID \(pid) is still listening on port \(process.port). No stop signal sent."
+            case .launchDirectoryUnavailable:
+                self.listenerActionMessage = "The project folder is unavailable. No stop signal sent."
+            case let .portInUse(port):
+                self.listenerActionMessage = "Port \(port) is still in use. Restart skipped."
+            case let .portUnverified(port):
+                self.listenerActionMessage = "Couldn’t verify port \(port) is free. Restart skipped."
+            case let .interrupted(result):
+                if let project, result == .requested(running: [], unconfirmed: []) {
+                    if unchanged {
+                        self.start(project)
+                        self.listenerActionMessage = "Launch requested for \(project.name)."
+                    } else {
+                        self.listenerActionMessage = "Launch settings changed. Restart skipped."
+                    }
+                } else {
+                    let message = Self.interruptMessage(result, pid: pid)
+                    self.listenerActionMessage = restarting ? "\(message) Restart skipped." : message
+                }
+            }
+            self.refresh()
         }
     }
 

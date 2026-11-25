@@ -87,13 +87,6 @@ struct MenuBarIcon: View {
         .fixedSize()
         .help(statusHelp)
         .accessibilityLabel(presentation.accessibilityLabel(hasWarning: hasWarning))
-        .contextMenu {
-            Button {
-                NSApplication.shared.terminate(nil)
-            } label: {
-                Label("Quit", systemImage: "power")
-            }
-        }
     }
 
     private var statusText: Text {
@@ -107,9 +100,10 @@ struct MenuBarIcon: View {
         case let .metric(metricLabel, showsSwapIndicator):
             var label = Text(metricLabel ?? "")
             if showsSwapIndicator {
-                label = label + Text(" ●")
+                let indicator = Text("●")
                     .font(.system(size: 6, weight: .regular))
                     .foregroundColor(.primary)
+                label = Text("\(label) \(indicator)")
             }
             return appendingWarning(to: label)
         }
@@ -117,9 +111,10 @@ struct MenuBarIcon: View {
 
     private func appendingWarning(to label: Text) -> Text {
         guard hasWarning else { return label }
-        return label + Text(" ●")
+        let indicator = Text("●")
             .font(.system(size: 7, weight: .bold))
             .foregroundColor(.red)
+        return Text("\(label) \(indicator)")
     }
 
     private var presentation: MenuBarStatusPresentation {

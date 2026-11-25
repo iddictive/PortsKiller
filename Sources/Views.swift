@@ -7,111 +7,188 @@ private typealias ViewState<Value> = SwiftUI.State<Value>
 
 struct MenuContentView: View {
     @EnvironmentObject private var model: AppModel
-    @ViewState private var activePanel: MenuPanel?
-    @ViewState private var query = ""
+    @ViewState private var showingSettings = false
+    @ViewState private var searchByMode: [ProcessViewMode: String] = [:]
+    @ViewState private var selectedAgentID: String?
+    @ViewState private var interruptTarget: AgentActivity?
+    @ViewState private var confirmingInterrupt = false
+    @ViewState private var ramSort: Bool? = nil
+    @ViewState private var showAgentPIDColumn = false
     @FocusState private var searchFocused: Bool
     var addProjectAction: ((DevProcess?) -> Void)? = nil
 
     var body: some View {
-        VStack(spacing: 0) {
-            switch activePanel {
-            case .preferences:
-                PreferencesView {
-                    activePanel = nil
-                }
-                .environmentObject(model)
-            case nil:
-                mainMenu
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .background(.regularMaterial)
-    }
-
-    private var mainMenu: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            toolbar
-            Divider()
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(workspaceTitle)
-                        .font(.system(.title2, design: .default, weight: .semibold))
+        HStack(spacing: 0) {
+            navigation
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 10) {
+                    Text(showingSettings ? "Settings" : workspaceTitle)
+                        .font(.system(size: 22, weight: .semibold))
+                        .tracking(-0.35)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
                         .accessibilityAddTraits(.isHeader)
-                    Spacer()
-                    filterField
-                }
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        if FeatureFlags.sessionRecovery && model.processViewMode == .agents {
-                            SessionRecoveryView()
-                        }
-                        content
+                    Spacer(minLength: 0)
+                    if !showingSettings {
+                        filterField
+                        refreshButton
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            }
-            .padding(.horizontal, 18)
-            .padding(.vertical, 14)
-            if let error = model.lastError {
-                Label(error, systemImage: "exclamationmark.triangle")
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .padding(.horizontal, 18)
-                    .padding(.bottom, 8)
-            }
-            Divider()
-            HStack(spacing: 8) {
-                SystemResourceSummary(resources: model.systemResources)
-                Spacer(minLength: 0)
-                if model.processViewMode == .agents, let updated = model.agentActivityUpdatedAt {
-                    Text("Scanned \(updated.formatted(date: .omitted, time: .standard))")
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .help("Time of the latest local process scan")
+                .padding(.horizontal, WorkspaceStyle.gutter)
+                .padding(.top, 16)
+                .padding(.bottom, 12)
+                if showingSettings {
+                    PreferencesView(addProjectAction: addProjectAction.map { open in { open(nil) } })
+                } else {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 2) {
+                            if model.processViewMode == .agents, FeatureFlags.sessionRecovery { SessionRecoveryView() }
+                            if let error = model.lastError {
+                                Label(error, systemImage: "exclamationmark.triangle")
+                                    .font(.callout)
+                                    .foregroundStyle(.red)
+                                    .padding(.vertical, 6)
+                            }
+                            content
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .onGeometryChange(for: Bool.self) { geometry in
+                            geometry.size.width >= AgentObservationRow.pidColumnThreshold
+                        } action: { fits in
+                            showAgentPIDColumn = fits
+                        }
+                        .padding(.horizontal, WorkspaceStyle.gutter)
+                        .padding(.bottom, 16)
+                    }
+                    .id(model.processViewMode)
+                    workspaceFooter
                 }
             }
-            .padding(.horizontal, 18)
-            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
-        .onChange(of: model.processViewMode) { _ in query = "" }
+        .foregroundStyle(WorkspaceStyle.ink)
+        .onChange(of: model.processViewMode) { _ in
+            selectedAgentID = nil
+        }
+        .onChange(of: filteredAgents.map(\.id)) { ids in
+            if let selectedAgentID, !ids.contains(selectedAgentID) { self.selectedAgentID = nil }
+        }
+        .alert("Interrupt this command?", isPresented: $confirmingInterrupt, presenting: interruptTarget) { item in
+            Button("Cancel", role: .cancel) {}
+            Button("Interrupt", role: .destructive) { model.stopAgent(item) }
+        } message: { item in
+            if let pid = item.pid {
+                Text("Requests a stop for \(item.title) (PID \(pid)) and its verified child processes. Unsaved output may be lost.")
+            }
+        }
         .screenBoundedPanel(.processes)
     }
 
-    private var toolbar: some View {
-        HStack(spacing: 14) {
-            Picker("View", selection: $model.processViewMode) {
-                ForEach(ProcessViewMode.allCases) { mode in Text(mode.title).tag(mode) }
+    private var workspaceFooter: some View {
+        HStack(spacing: 8) {
+            SystemResourceSummary(resources: model.systemResources)
+            Spacer(minLength: 4)
+            if model.processViewMode == .agents,
+               model.agentActivities.contains(where: { $0.kind == .unavailable }) {
+                Text("Scan unavailable")
+            } else if let completed = model.activeScanCompletedAt {
+                Text("Scanned \(completed.formatted(date: .omitted, time: .standard))")
+                    .help("Latest scan for this view on this Mac")
+            } else {
+                Text("This Mac")
             }
-            .labelsHidden()
-            .pickerStyle(.segmented)
-            .frame(maxWidth: 330)
-            Spacer(minLength: 0)
-            Button { addProjectAction?(nil) } label: {
-                Label("Add Project", systemImage: "plus")
-            }
-            .controlSize(.small)
-            Button { model.refresh() } label: { Image(systemName: "arrow.clockwise") }
-                .buttonStyle(.borderless)
-                .keyboardShortcut("r", modifiers: .command)
-                .help("Refresh (⌘R)")
-                .accessibilityLabel("Refresh")
-            Menu {
-                Button("Find in this view") { searchFocused = true }
-                    .keyboardShortcut("f", modifiers: .command)
-                Button("Preferences…") { activePanel = .preferences }
-                    .keyboardShortcut(",", modifiers: .command)
-                Divider()
-                Button("Quit PortsKiller") { NSApp.terminate(nil) }
-            } label: { Image(systemName: "ellipsis.circle") }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .help("Preferences and app actions")
-            .accessibilityLabel("App actions")
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 11)
+        .font(.caption.monospacedDigit())
+        .foregroundStyle(WorkspaceStyle.mutedInk)
+        .lineLimit(1)
+        .padding(.horizontal, WorkspaceStyle.gutter)
+        .padding(.vertical, 10)
+    }
+
+    private var navigation: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(ProcessViewMode.allCases) { mode in
+                let selected = !showingSettings && model.processViewMode == mode
+                let route = navigationRoute(for: mode)
+                Button {
+                    searchFocused = false
+                    showingSettings = false
+                    if model.processViewMode != mode { model.processViewMode = mode }
+                } label: {
+                    navLabel(mode.title, symbol: route.symbol, shortcut: route.hint)
+                }
+                .buttonStyle(WorkspaceButton(selected: selected))
+                .keyboardShortcut(route.key, modifiers: .command)
+                .help("\(mode.title) (\(route.hint))")
+                .accessibilityAddTraits(selected ? .isSelected : [])
+            }
+            Spacer(minLength: 8)
+            if addProjectAction != nil {
+                Button { addProjectAction?(nil) } label: {
+                    navLabel("Add project", symbol: "plus")
+                }
+                .buttonStyle(WorkspaceButton())
+            }
+            Button {
+                searchFocused = false
+                showingSettings.toggle()
+            } label: {
+                navLabel("Settings", symbol: showingSettings ? "gearshape.fill" : "gearshape", shortcut: "⌘,")
+            }
+            .buttonStyle(WorkspaceButton(selected: showingSettings))
+            .help("Settings (⌘,)")
+            .accessibilityAddTraits(showingSettings ? .isSelected : [])
+            .accessibilityIdentifier("workspace.settings")
+            .keyboardShortcut(",", modifiers: .command)
+        }
+        .padding(7)
+        .frame(width: 142)
+        .frame(maxHeight: .infinity)
+        .modifier(WorkspaceRail())
+        .padding(.leading, 10)
+        .padding(.vertical, 10)
+    }
+
+    private func navLabel(_ title: String, symbol: String, shortcut: String? = nil) -> some View {
+        HStack(spacing: 7) {
+            Image(systemName: symbol)
+                .font(.system(size: 13, weight: .medium))
+                .frame(width: 17)
+                .accessibilityHidden(true)
+            Text(title).font(.system(size: 13, weight: .medium))
+                .lineLimit(1).fixedSize(horizontal: true, vertical: false)
+            if let shortcut {
+                Spacer(minLength: 0)
+                Text(verbatim: shortcut)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(WorkspaceStyle.mutedInk)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .accessibilityHidden(true)
+            }
+        }
+        .padding(.horizontal, 9)
+        .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
+    }
+
+    private func navigationRoute(for mode: ProcessViewMode) -> (symbol: String, key: KeyEquivalent, hint: String) {
+        switch mode {
+        case .agents: ("terminal", "1", "⌘1")
+        case .dev: ("chevron.left.forwardslash.chevron.right", "2", "⌘2")
+        case .all: ("point.3.connected.trianglepath.dotted", "3", "⌘3")
+        case .activity: ("waveform.path", "4", "⌘4")
+        }
+    }
+
+    private var refreshButton: some View {
+        Button { model.refresh() } label: {
+            Image(systemName: "arrow.clockwise")
+                .font(.system(size: 13, weight: .medium))
+                .frame(width: 34, height: 34)
+        }
+        .buttonStyle(WorkspaceButton())
+        .keyboardShortcut("r", modifiers: .command)
+        .accessibilityLabel("Refresh")
+        .help("Refresh (⌘R)")
     }
 
     private var workspaceTitle: String {
@@ -123,124 +200,263 @@ struct MenuContentView: View {
         }
     }
 
-    private var filterField: some View {
-        HStack(spacing: 5) {
-            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-            TextField("Filter", text: $query)
-                .textFieldStyle(.plain)
-                .focused($searchFocused)
-                .accessibilityLabel("Filter this view")
-                .onExitCommand {
-                    if query.isEmpty { searchFocused = false } else { query = "" }
-                }
-            if !query.isEmpty {
-                Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }
-                    .buttonStyle(.borderless)
-                    .foregroundStyle(.secondary)
-                    .accessibilityLabel("Clear filter")
-            }
-        }
-        .font(.system(size: 12))
-        .padding(.horizontal, 8)
-        .padding(.vertical, 5)
-        .frame(width: 168)
-        .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
-        .overlay {
-            RoundedRectangle(cornerRadius: 6)
-                .strokeBorder(searchFocused ? Color.accentColor : Color.secondary.opacity(0.25),
-                              lineWidth: searchFocused ? 1.5 : 0.5)
-                .allowsHitTesting(false)
+    private var filterScope: (prompt: String, label: String, help: String) {
+        switch model.processViewMode {
+        case .agents:
+            ("Project or PID", "Filter agents", "Filter by project, tool, process type, or any PID (⌘F)")
+        case .dev, .all:
+            ("URL, port, PID", "Filter listening processes", "Filter by project, framework, host, URL, port, or PID (⌘F)")
+        case .activity:
+            ("App or PID", "Filter resource activity", "Filter by app, process type, or any PID (⌘F)")
         }
     }
 
-    private func matches(_ fields: [String]) -> Bool {
-        let tokens = query.split(whereSeparator: { $0.isWhitespace })
-        return tokens.allSatisfy { token in fields.contains { $0.localizedCaseInsensitiveContains(String(token)) } }
+    private var filterField: some View {
+        let scope = filterScope
+        return WorkspaceFilterField(
+            query: Binding(get: { query }, set: { query = $0 }),
+            focus: $searchFocused, prompt: scope.prompt, label: scope.label,
+            identifier: "workspace.filter", height: 34, clearsOnEscape: true
+        )
+        .frame(width: showAgentPIDColumn ? 178 : 135)
+        .background {
+            Button("") { searchFocused = true }
+                .keyboardShortcut("f", modifiers: .command)
+                .opacity(0)
+                .focusable(false)
+                .accessibilityHidden(true)
+        }
+        .help(scope.help)
+    }
+
+    // Each view owns its filter; switching views never focuses the field or
+    // makes the user retype a process ID on the way back.
+    private var query: String {
+        get { searchByMode[model.processViewMode] ?? "" }
+        nonmutating set { searchByMode[model.processViewMode] = newValue }
+    }
+
+    private var filterTokens: [Substring] {
+        query.split(whereSeparator: { $0.isWhitespace || $0 == "·" })
+    }
+
+    /// Search attributes the workspace shows or copies, never raw command arguments.
+    private func filter<Row>(_ rows: [Row], text: (Row) -> [String], numbers: (Row) -> [Int]) -> [Row] {
+        let tokens = filterTokens
+        guard !tokens.isEmpty else { return rows }
+        return rows.filter { row in
+            let fields = text(row)
+            let identifiers = numbers(row)
+            return tokens.allSatisfy { token in
+                if let number = Int(token) { return identifiers.contains(number) }
+                return fields.contains { $0.localizedStandardContains(String(token)) }
+            }
+        }
+    }
+
+    private var filteredAgents: [AgentActivity] {
+        filter(model.agentActivities, text: { row in
+            [row.title, row.detail, row.kind.title, row.project ?? "", row.toolContext ?? ""]
+        }, numbers: { row in
+            row.memberPIDs.map(Int.init) + (row.pid.map { [Int($0)] } ?? [])
+        })
     }
 
     @ViewBuilder private var content: some View {
-        switch model.processViewMode {
-        case .agents:
-            agentList
-        case .activity:
-            let items = model.activityProcesses.filter { row in
-                matches([row.name, row.kind.title, row.detail, row.primaryPID.map { String($0) } ?? ""])
+        if let message = model.activeLocalActionMessage {
+            Text(verbatim: message)
+                .font(.callout)
+                .foregroundStyle(WorkspaceStyle.ink)
+                .padding(.vertical, 6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("workspace.process-action-status")
+        }
+        if model.activeScanCompletedAt == nil {
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                    .accessibilityHidden(true)
+                Text("Scanning this Mac…").font(.callout)
             }
-            if items.isEmpty { emptyOrFiltered }
-            else { ForEach(items) { ActivityProcessRow(process: $0) } }
-        case .dev, .all:
-            let items = model.processes.filter { row in
-                matches([row.name, row.kind.title, row.framework, row.cwd ?? "", String(row.port), String(row.pid)])
+            .foregroundStyle(WorkspaceStyle.mutedInk)
+            .padding(.vertical, 12)
+            .accessibilityIdentifier("workspace.scanning")
+        } else {
+            switch model.processViewMode {
+            case .agents:
+                agentList
+            case .activity:
+                let all = model.activityProcesses
+                let items = filter(all, text: { [$0.name, $0.kind.title, $0.detail] },
+                                   numbers: { $0.targetPIDs.map(Int.init) })
+                if all.isEmpty { EmptyStateView() }
+                else if items.isEmpty { noMatches }
+                else { ForEach(items) { ActivityProcessRow(process: $0) } }
+            case .dev, .all:
+                let all = model.processes
+                let items = filter(all, text: { row in
+                    [row.name, row.kind.title, row.framework, row.cwd ?? "", row.host, row.urlString]
+                }, numbers: { [$0.port, Int($0.pid)] })
+                if all.isEmpty { EmptyStateView() }
+                else if items.isEmpty { noMatches }
+                else { ForEach(items) { ProcessRow(process: $0, configureRestart: { addProjectAction?($0) }) } }
             }
-            if items.isEmpty { emptyOrFiltered }
-            else { ForEach(items) { ProcessRow(process: $0, configureRestart: { addProjectAction?($0) }) } }
         }
     }
 
     @ViewBuilder private var agentList: some View {
-        let rows = model.agentActivities.filter { row in
-            matches([row.title, row.detail, row.kind.title, row.pid.map { String($0) } ?? ""])
-        }
+        let rows = filteredAgents
         let work = rows.filter { $0.kind == .work }
         let services = rows.filter { $0.kind == .service || $0.kind == .host }
-        let unavailable = model.agentActivities.filter { $0.kind == .unavailable }
-        if !unavailable.isEmpty {
-            ForEach(unavailable) { AgentObservationRow(item: $0) }
+        let unavailable = model.agentActivities.first { $0.kind == .unavailable }
+
+        if let message = model.agentActionMessage {
+            Text(verbatim: message)
+                .font(.callout)
+                .foregroundStyle(WorkspaceStyle.ink)
+                .padding(.vertical, 8)
+                .accessibilityIdentifier("agents.action-status")
         }
-        if model.agentActivityUpdatedAt == nil && rows.isEmpty && unavailable.isEmpty {
-            HStack(spacing: 8) {
-                ProgressView().controlSize(.small)
-                Text("Reading local processes…").font(.callout).foregroundStyle(.secondary)
-            }
-            .padding(.vertical, 12)
-        } else if !query.isEmpty && work.isEmpty && services.isEmpty && unavailable.isEmpty {
+
+        if let unavailable {
+            agentScanState(unavailable.title, detail: unavailable.detail, symbol: "exclamationmark.circle")
+        } else if !filterTokens.isEmpty && rows.isEmpty && !model.agentActivities.isEmpty {
             noMatches
-        } else if !work.isEmpty || !services.isEmpty || unavailable.isEmpty {
-            if !work.isEmpty || (query.isEmpty && unavailable.isEmpty) {
-                sectionLabel("Local work", count: work.count)
-                if work.isEmpty {
-                    Text("No local agent commands observed in this scan.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .padding(.vertical, 7)
-                } else {
-                    ForEach(work) { AgentObservationRow(item: $0) }
-                }
+        } else {
+            if !work.isEmpty {
+                agentSection("Local commands", rows: work, showColumns: true)
+            } else if filterTokens.isEmpty || model.agentActivities.isEmpty {
+                agentScanState("No local Codex commands detected", detail: "Cloud jobs aren’t shown here.", symbol: "terminal")
             }
             if !services.isEmpty {
-                sectionLabel("Hosts & services", count: services.count)
-                    .padding(.top, work.isEmpty && !query.isEmpty ? 0 : 12)
-                ForEach(services) { AgentObservationRow(item: $0) }
+                agentSection("Runtimes and services", rows: services, showColumns: work.isEmpty)
+                    .padding(.top, work.isEmpty && !filterTokens.isEmpty ? 0 : 13)
             }
         }
     }
 
-    private func sectionLabel(_ title: String, count: Int) -> some View {
-        HStack(spacing: 6) {
-            Text(title).font(.subheadline.weight(.semibold))
-            Text(verbatim: "\(count)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+    private func agentScanState(_ title: String, detail: String, symbol: String) -> some View {
+        HStack(alignment: .top, spacing: 9) {
+            Image(systemName: symbol)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(WorkspaceStyle.mutedInk)
+                .accessibilityHidden(true)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(verbatim: title)
+                    .font(.callout.weight(.medium))
+                Text(verbatim: detail)
+                    .font(.subheadline)
+                    .foregroundStyle(WorkspaceStyle.mutedInk)
+            }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(.isHeader)
-        .padding(.bottom, 4)
+        .padding(.vertical, 10)
     }
 
-    @ViewBuilder private var emptyOrFiltered: some View {
-        if query.isEmpty { EmptyStateView() } else { noMatches }
+    private func agentSection(_ title: String, rows: [AgentActivity], showColumns: Bool) -> some View {
+        Section {
+            ForEach(sortedByMemory(rows)) { item in
+                let expanded = selectedAgentID == item.id
+                let interrupting = model.stoppingAgentIDs.contains(item.id)
+                AgentObservationRow(
+                    item: item,
+                    expanded: expanded,
+                    interrupting: interrupting,
+                    showPIDColumn: showAgentPIDColumn
+                ) {
+                    selectedAgentID = expanded ? nil : item.id
+                } onInterrupt: {
+                    interruptTarget = item
+                    confirmingInterrupt = true
+                }
+            }
+        } header: {
+            HStack(spacing: AgentObservationRow.columnSpacing) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .accessibilityAddTraits(.isHeader)
+                Spacer(minLength: 0)
+                if showColumns {
+                    Button {
+                        ramSort = ramSort.map { !$0 } ?? true
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text("RAM")
+                            if let ramSort {
+                                Image(systemName: ramSort ? "arrow.down" : "arrow.up")
+                                    .font(.system(size: 8, weight: .semibold))
+                            }
+                        }
+                        .frame(width: AgentObservationRow.ramWidth, alignment: .trailing)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel("Sort by memory")
+                    .accessibilityValue(ramSort.map { $0 ? "Highest first" : "Lowest first" } ?? "Default order")
+                    .help("Sort by memory")
+                    if showAgentPIDColumn {
+                        Text("PID")
+                            .frame(width: AgentObservationRow.pidWidth, alignment: .trailing)
+                    }
+                    Color.clear.frame(width: AgentObservationRow.disclosureWidth, height: 1)
+                    Color.clear.frame(width: AgentObservationRow.actionWidth, height: 1)
+                }
+            }
+            .font(.caption.weight(.medium))
+            .foregroundStyle(WorkspaceStyle.mutedInk)
+            .padding(.horizontal, AgentObservationRow.horizontalInset)
+            .padding(.vertical, 5)
+        }
+    }
+
+    private func sortedByMemory(_ rows: [AgentActivity]) -> [AgentActivity] {
+        guard let ramSort else { return rows }
+        return rows.enumerated().sorted { left, right in
+            switch (left.element.memoryBytes, right.element.memoryBytes) {
+            case let (leftBytes?, rightBytes?) where leftBytes != rightBytes:
+                return ramSort ? leftBytes > rightBytes : leftBytes < rightBytes
+            case (_?, nil): return true
+            case (nil, _?): return false
+            default: return left.offset < right.offset
+            }
+        }.map(\.element)
     }
 
     private var noMatches: some View {
         HStack {
             Text("No matches for this filter.").font(.callout).foregroundStyle(.secondary)
             Spacer()
-            Button("Clear filter") { query = "" }.buttonStyle(.link)
+            Button("Clear filter") {
+                query = ""
+                searchFocused = true
+            }
+            .buttonStyle(.link)
         }
         .padding(.vertical, 12)
     }
 }
 
 private struct AgentObservationRow: View {
+    nonisolated static let pidColumnThreshold: CGFloat = 500
+    static let horizontalInset: CGFloat = 10
+    static let columnSpacing: CGFloat = 10
+    static let ramWidth: CGFloat = 68
+    static let pidWidth: CGFloat = 48
+    static let disclosureWidth: CGFloat = 14
+    private static let copyWidth: CGFloat = 29
+    private static let stopWidth: CGFloat = 56
+    private static let actionSpacing: CGFloat = 4
+    static let actionWidth = copyWidth + stopWidth + actionSpacing
+
     let item: AgentActivity
+    let expanded: Bool
+    let interrupting: Bool
+    let showPIDColumn: Bool
+    let toggle: () -> Void
+    let onInterrupt: () -> Void
+    @ViewState private var copied = false
 
     private var symbol: String {
         switch item.kind {
@@ -251,35 +467,263 @@ private struct AgentObservationRow: View {
         }
     }
 
+    private var primary: String { item.project ?? item.toolContext ?? item.title }
+
+    private var secondary: String {
+        guard item.kind == .work else { return item.detail }
+        // A classified label such as Inline Python already identifies its
+        // interpreter; repeating that information is hard to scan at 620pt.
+        let context = item.project == nil ? nil : item.toolContext.flatMap {
+            item.title.localizedStandardContains($0) ? nil : $0
+        }
+        let values = [context, item.title]
+            .compactMap { $0 }
+            .filter { $0.localizedCaseInsensitiveCompare(primary) != .orderedSame }
+        if !values.isEmpty { return values.joined(separator: " · ") }
+        if let started = item.startedAt {
+            return "Started \(started.formatted(date: .omitted, time: .standard))"
+        }
+        return item.kind.title
+    }
+
+    private var memory: String? { item.memoryBytes.map(byteString) }
+    private var pid: String? { item.pid.map { String($0) } }
+    private var cpu: String? {
+        item.cpuPercent.map { String(format: $0 < 10 ? "%.1f%%" : "%.0f%%", $0) }
+    }
+
+    private var stopUnavailableReason: String? {
+        switch item.kind {
+        case .work:
+            return item.pid != nil && item.identity != nil
+                ? nil
+                : "Stop unavailable: process group not verified."
+        case .service:
+            return "Tool services are read-only here."
+        case .host:
+            return "Codex runtimes are read-only here."
+        case .unavailable:
+            return "There is no process to stop."
+        }
+    }
+
+    private var copyablePIDs: [Int32] {
+        let members = item.memberPIDs
+        return members.isEmpty ? item.pid.map { [$0] } ?? [] : members
+    }
+
     var body: some View {
-        HStack(alignment: .center, spacing: 10) {
-            Image(systemName: symbol)
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(item.kind == .work ? Color.accentColor : Color.secondary)
-                .frame(width: 23)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(verbatim: item.title)
-                    .font(.body.weight(.medium))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Text(verbatim: item.detail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: Self.columnSpacing) {
+                Button(action: toggle) { rowLabel }
+                    .buttonStyle(WorkspaceButton(selected: expanded))
+                    .accessibilityLabel("\(primary), \(secondary)")
+                    .accessibilityValue(accessibleSummary)
+                    .accessibilityHint(expanded ? "Hide process details" : "Show process details")
+                    .accessibilityAddTraits(expanded ? .isSelected : [])
+                    .accessibilityIdentifier("agents.row.\(item.id)")
+                rowActions
             }
-            Spacer(minLength: 8)
-            if let pid = item.pid {
-                Text(verbatim: "PID \(pid)")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
+            .padding(.trailing, Self.horizontalInset)
+
+            if expanded {
+                inspector
             }
         }
-        .modifier(ProcessRowSurface())
-        .accessibilityElement(children: .combine)
-        .accessibilityValue(item.kind.title)
-        .help(item.detail)
+        .background {
+            if expanded {
+                RoundedRectangle(cornerRadius: WorkspaceStyle.groupRadius)
+                    .fill(WorkspaceStyle.group)
+            }
+        }
+        .task(id: copied) {
+            guard copied else { return }
+            try? await Task.sleep(for: .seconds(1.4))
+            if !Task.isCancelled { copied = false }
+        }
+    }
+
+    private var rowLabel: some View {
+        HStack(spacing: Self.columnSpacing) {
+            Image(systemName: symbol)
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(WorkspaceStyle.mutedInk)
+                .frame(width: 19)
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(verbatim: primary)
+                    .font(.body.weight(.semibold))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                HStack(spacing: 5) {
+                    if !showPIDColumn, let pid {
+                        Text("PID \(pid)")
+                            .monospacedDigit()
+                            .fixedSize(horizontal: true, vertical: false)
+                        Text("·")
+                            .fixedSize(horizontal: true, vertical: false)
+                    }
+                    Text(verbatim: secondary)
+                        .truncationMode(showPIDColumn ? .middle : .tail)
+                }
+                .font(.subheadline)
+                .foregroundStyle(WorkspaceStyle.mutedInk)
+                .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Text(verbatim: memory ?? "—")
+                .fixedSize(horizontal: true, vertical: false)
+                .frame(width: Self.ramWidth, alignment: .trailing)
+            if showPIDColumn {
+                Text(verbatim: pid ?? "—")
+                    .foregroundStyle(WorkspaceStyle.mutedInk)
+                    .frame(width: Self.pidWidth, alignment: .trailing)
+            }
+            Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(WorkspaceStyle.mutedInk)
+                .frame(width: Self.disclosureWidth)
+                .accessibilityHidden(true)
+        }
+        .font(.callout.monospacedDigit())
+        .lineLimit(1)
+        .padding(.leading, Self.horizontalInset)
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
+    }
+
+    private var accessibleSummary: String {
+        let size = memory.map { "RAM \($0)" } ?? "RAM unavailable"
+        let processID = pid.map { "PID \($0)" }
+            ?? (copyablePIDs.isEmpty ? "PID unavailable" : "\(copyablePIDs.count) process IDs")
+        return [size, processID, expanded ? "Expanded" : "Collapsed"].joined(separator: ", ")
+    }
+
+    private var inspector: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if item.kind == .work {
+                inspectorPair(
+                    ("Command", item.title), ("Project", item.project)
+                )
+                inspectorPair(
+                    ("Classification", item.toolContext ?? item.kind.title),
+                    ("Started", item.startedAt?.formatted(date: .abbreviated, time: .standard))
+                )
+                inspectorPair(
+                    ("PID", pid), ("RAM", memory)
+                )
+                if cpu != nil || item.groupedProcessCount != nil {
+                    inspectorPair(("CPU", cpu), ("Processes", item.groupedProcessCount.map(String.init)))
+                }
+            } else {
+                inspectorPair(
+                    ("Classification", item.kind.title), ("PID", pid)
+                )
+                if memory != nil || cpu != nil {
+                    inspectorPair(("RAM", memory), ("CPU", cpu))
+                }
+            }
+            if copyablePIDs.count > 1 {
+                inspectorFact("Process IDs", copyablePIDs.map(String.init).joined(separator: " · "))
+            }
+            if let reason = stopUnavailableReason {
+                Text(verbatim: reason)
+                    .font(.caption)
+                    .foregroundStyle(WorkspaceStyle.mutedInk)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.horizontal, 13)
+        .padding(.top, 11)
+        .padding(.bottom, 12)
+    }
+
+    @ViewBuilder private func inspectorPair(_ first: (String, String?), _ second: (String, String?)) -> some View {
+        if first.1 != nil || second.1 != nil {
+            HStack(alignment: .top, spacing: 14) {
+                inspectorFact(first.0, first.1)
+                inspectorFact(second.0, second.1)
+            }
+        }
+    }
+
+    @ViewBuilder private func inspectorFact(_ label: String, _ value: String?) -> some View {
+        if let value {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(label)
+                    .font(.caption)
+                    .foregroundStyle(WorkspaceStyle.mutedInk)
+                Text(verbatim: value)
+                    .font(.callout.monospacedDigit())
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .combine)
+        } else {
+            // Keep alternating facts aligned without making absent facts look actionable.
+            Color.clear.frame(maxWidth: .infinity, maxHeight: 0)
+                .accessibilityHidden(true)
+        }
+    }
+
+    private var rowActions: some View {
+        HStack(spacing: Self.actionSpacing) {
+            copyPIDButton
+            if interrupting {
+                ProgressView()
+                    .controlSize(.mini)
+                    .frame(width: Self.stopWidth, height: 28)
+                    .accessibilityLabel("Stopping \(primary)")
+                    .accessibilityIdentifier("agents.interrupt-progress.\(item.id)")
+                    .help("Waiting for this command to exit")
+            } else if stopUnavailableReason == nil {
+                Button(role: .destructive, action: onInterrupt) {
+                    Text("Stop…")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(WorkspaceStyle.ink)
+                        .frame(width: Self.stopWidth, height: 28)
+                }
+                .buttonStyle(WorkspaceButton(restingFill: true))
+                .accessibilityLabel(pid.map { "Stop \(primary), PID \($0)" } ?? "Stop \(primary)")
+                .accessibilityHint("Opens confirmation before interrupting the command.")
+                .accessibilityIdentifier("agents.interrupt.\(item.id)")
+                .help("Request a stop for this command and its verified child processes")
+            } else {
+                Color.clear.frame(width: Self.stopWidth, height: 28)
+                    .accessibilityHidden(true)
+            }
+        }
+        .frame(width: Self.actionWidth, alignment: .leading)
+    }
+
+    private var copyPIDButton: some View {
+        let copyTitle = copyablePIDs.count > 1 ? "Copy \(copyablePIDs.count) PIDs" : "Copy PID"
+        return Group {
+            if !copyablePIDs.isEmpty {
+                Button {
+                    let board = NSPasteboard.general
+                    board.clearContents()
+                    if board.setString(copyablePIDs.map(String.init).joined(separator: "\n"), forType: .string) {
+                        copied = true
+                    }
+                } label: {
+                    Image(systemName: copied ? "checkmark" : "document.on.document")
+                        .font(.system(size: 12, weight: .medium))
+                        .frame(width: Self.copyWidth, height: 30)
+                }
+                .buttonStyle(WorkspaceButton())
+                .accessibilityLabel(copyTitle)
+                .accessibilityValue(copied ? "Copied" : "")
+                .accessibilityIdentifier("agents.copy-pid.\(item.id)")
+                .help(copied ? "Copied" : copyTitle)
+            } else {
+                Color.clear.frame(height: 30).accessibilityHidden(true)
+            }
+        }
+        .frame(width: Self.copyWidth)
     }
 }
 
@@ -345,10 +789,6 @@ private struct SessionRecoveryView: View {
     }
 }
 
-private enum MenuPanel {
-    case preferences
-}
-
 private struct EmptyStateView: View {
     @EnvironmentObject private var model: AppModel
 
@@ -391,9 +831,8 @@ private struct ProcessRowSurface: ViewModifier {
     func body(content: Content) -> some View {
         content
             .padding(.horizontal, 4)
-            .padding(.vertical, 9)
+            .padding(.vertical, 7)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .overlay(alignment: .bottom) { Divider().allowsHitTesting(false) }
     }
 }
 
@@ -402,6 +841,10 @@ private struct ActivityProcessRow: View {
     let process: ActivityProcess
 
     @ViewState private var confirmingStop = false
+
+    private var pending: String? {
+        process.primaryPID.flatMap { model.pendingLocalActions[$0] }
+    }
 
     var body: some View {
         HStack(spacing: 10) {
@@ -418,16 +861,23 @@ private struct ActivityProcessRow: View {
             }
             Spacer(minLength: 6)
             ResourceMonitor(resources: process.resources, memoryLabel: "RSS")
-            if process.canStop {
+            if process.kind == .simulator, process.primaryPID != nil {
                 Button { confirmingStop = true } label: {
-                    Image(systemName: "stop.circle")
+                    Group {
+                        if pending != nil { ProgressView().controlSize(.mini) }
+                        else { Image(systemName: "stop.circle") }
+                    }
+                    .frame(width: 17, height: 18)
                 }
                 .buttonStyle(.borderless)
-                .help("Stop \(process.name)")
-                .accessibilityLabel("Stop \(process.name)")
+                .disabled(!process.canStop || pending != nil)
+                .help(pending ?? (process.canStop ? "Request a stop for \(process.name)" : "This process could not be verified for a safe stop."))
+                .accessibilityLabel(pending ?? "Stop \(process.name)")
                 .confirmationDialog("Stop \(process.name)?", isPresented: $confirmingStop) {
                     Button("Stop", role: .destructive) { model.stop(process) }
                     Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("Requests a stop for the simulator and its verified child processes.")
                 }
             }
         }
@@ -439,7 +889,9 @@ private struct ProcessRow: View {
     @EnvironmentObject private var model: AppModel
     let process: DevProcess
     var configureRestart: (DevProcess) -> Void
-    @ViewState private var confirmingStop = false
+    @ViewState private var confirmingAction = false
+    @ViewState private var confirmingRestart = false
+    private var pending: String? { model.pendingLocalActions[process.pid] }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -469,22 +921,43 @@ private struct ProcessRow: View {
                         .disabled(process.cwd == nil)
                     Divider()
                     if process.canRestart {
-                        Button("Restart") { model.restart(process) }
-                            .disabled(!process.canStop)
+                        Button("Restart…") { confirmingRestart = true; confirmingAction = true }
+                            .disabled(!process.canStop || pending != nil)
                     } else {
                         Button("Set up restart…") { configureRestart(process) }
                     }
-                    Button("Stop…", role: .destructive) { confirmingStop = true }
-                        .disabled(!process.canStop)
-                } label: { Image(systemName: "ellipsis.circle") }
+                    Button("Stop…", role: .destructive) { confirmingRestart = false; confirmingAction = true }
+                        .disabled(!process.canStop || pending != nil)
+                    if let note = pending ?? process.stopUnavailableReason {
+                        Text(verbatim: note)
+                    }
+                } label: {
+                    Group {
+                        if pending != nil { ProgressView().controlSize(.mini) }
+                        else { Image(systemName: "ellipsis.circle") }
+                    }
+                    .frame(width: 17, height: 18)
+                }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
                 .fixedSize()
                 .accessibilityLabel("Actions for \(process.name) on port \(process.port)")
-                .help("Process actions")
-                .confirmationDialog("Stop \(process.name) on port \(process.port)?", isPresented: $confirmingStop) {
-                    Button("Stop Process", role: .destructive) { model.stop(process) }
+                .accessibilityValue(pending ?? "")
+                .help(pending ?? "Process actions")
+                .confirmationDialog(
+                    "\(confirmingRestart ? "Restart" : "Stop") \(process.name) on port \(process.port)?",
+                    isPresented: $confirmingAction
+                ) {
+                    if confirmingRestart {
+                        Button("Restart", role: .destructive) { model.restart(process) }
+                    } else {
+                        Button("Stop Process", role: .destructive) { model.stop(process) }
+                    }
                     Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text(confirmingRestart
+                         ? "Starts the project again only after the old process group exits and the port is free."
+                         : "Requests a stop for PID \(process.pid) and its verified child processes.")
                 }
             }
             if let projectID = process.projectID {
@@ -645,12 +1118,16 @@ struct AddProjectView: View {
 
     @ViewState private var name = ""
     @ViewState private var cwd = ""
-    @ViewState private var command = "pnpm dev"
+    @ViewState private var command = ""
     @ViewState private var port = "3000"
     @ViewState private var packageManager = "npm"
     @ViewState private var scripts: [PackageScript] = []
     @ViewState private var selectedScript = ""
-    @ViewState private var folderState = "Choose a project folder"
+    @ViewState private var inspectedFolder: String?
+    @ViewState private var suggestedCommand: String?
+    @ViewState private var suggestedName: String?
+    @ViewState private var suggestedPort: String? = "3000"
+    @ViewState private var folderState = "Choose a project folder to find its launch scripts."
 
     init(process: DevProcess? = nil, onClose: @escaping () -> Void) {
         self.onClose = onClose
@@ -658,7 +1135,8 @@ struct AddProjectView: View {
             _name = State(initialValue: process.name)
             _cwd = State(initialValue: process.cwd ?? "")
             _port = State(initialValue: String(process.port))
-            _command = State(initialValue: "")
+            _suggestedPort = State(initialValue: nil)
+            _inspectedFolder = State(initialValue: process.cwd)
             _folderState = State(initialValue: "Enter the command used to start this process.")
         }
     }
@@ -673,43 +1151,47 @@ struct AddProjectView: View {
 
             FittingScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack(spacing: 8) {
-                            TextField("Project folder", text: $cwd)
-                                .textFieldStyle(.roundedBorder)
-                                .onSubmit { loadFolder() }
+                    SettingsBlock {
+                        FieldBlock(title: "Project folder") {
+                            HStack(spacing: 8) {
+                                TextField("Path to a folder", text: folderChoice)
+                                    .textFieldStyle(.roundedBorder)
+                                    .accessibilityLabel("Project folder")
+                                    .onSubmit { loadFolder() }
 
-                            Button {
-                                chooseFolder()
-                            } label: {
-                                Label("Choose", systemImage: "folder")
+                                Button {
+                                    chooseFolder()
+                                } label: {
+                                    Label("Choose…", systemImage: "folder")
+                                }
+                                .buttonStyle(.bordered)
                             }
-                            .buttonStyle(.bordered)
                         }
 
                         Text(folderState)
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                    .padding(12)
 
-                    VStack(alignment: .leading, spacing: 12) {
+                    SettingsBlock {
                         HStack(spacing: 10) {
                             FieldBlock(title: "Name") {
-                                TextField("my-app", text: $name)
+                                TextField("Project name", text: $name)
                                     .textFieldStyle(.roundedBorder)
                             }
 
                             FieldBlock(title: "Port") {
                                 TextField("3000", text: $port)
                                     .textFieldStyle(.roundedBorder)
+                                    .accessibilityLabel("Port")
                             }
+                            .frame(width: 85)
                         }
 
-                        HStack(alignment: .top, spacing: 10) {
+                        if !scripts.isEmpty {
                             FieldBlock(title: "Package manager") {
-                                Picker("", selection: $packageManager) {
+                                Picker("Package manager", selection: managerChoice) {
                                     Text("npm").tag("npm")
                                     Text("pnpm").tag("pnpm")
                                     Text("yarn").tag("yarn")
@@ -717,68 +1199,100 @@ struct AddProjectView: View {
                                 }
                                 .labelsHidden()
                                 .pickerStyle(.segmented)
-                                .onChange(of: packageManager) { _ in applySelectedScript() }
                             }
 
-                            FieldBlock(title: "Script") {
-                                Picker("", selection: $selectedScript) {
-                                    if scripts.isEmpty {
-                                        Text("dev").tag("dev")
-                                    } else {
-                                        ForEach(scripts) { script in
-                                            Text(script.name).tag(script.name)
-                                        }
-                                    }
-                                }
-                                .labelsHidden()
-                                .onChange(of: selectedScript) { _ in applySelectedScript() }
-                            }
+                            ScriptPreviewList(scripts: scripts, selectedScript: scriptChoice)
                         }
 
-                        FieldBlock(title: "Command") {
-                            TextField("npm run dev", text: $command)
+                        FieldBlock(title: "Launch command") {
+                            TextField("Enter a command", text: $command)
                                 .font(.system(.body, design: .monospaced))
                                 .textFieldStyle(.roundedBorder)
+                                .accessibilityLabel("Launch command")
                         }
-                    }
-                    .padding(12)
-
-                    if !scripts.isEmpty {
-                        ScriptPreviewList(scripts: scripts, selectedScript: $selectedScript)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            if let validationMessage, !folderPath.isEmpty, validationMessage != folderState {
+                Text(validationMessage)
+                    .font(.caption)
+                    .foregroundStyle(WorkspaceStyle.mutedInk)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             HStack {
                 Button {
                     loadFolder()
                 } label: {
-                    Label("Reload Scripts", systemImage: "arrow.clockwise")
+                    Label("Load Scripts", systemImage: "arrow.clockwise")
                 }
                 .buttonStyle(.borderless)
                 .controlSize(.small)
+                .disabled(folderPath.isEmpty)
 
                 Spacer()
 
                 Button("Save") {
                     saveProject(start: false)
                 }
-                .disabled(!isValid)
+                .disabled(validationMessage != nil)
 
                 Button("Save & Start") {
                     saveProject(start: true)
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(!isValid)
+                .disabled(validationMessage != nil)
             }
         }
         .padding(20)
         .screenBoundedPanel(.project)
     }
 
-    private var isValid: Bool {
-        !name.isEmpty && !cwd.isEmpty && !command.isEmpty && Int(port) != nil
+    private var folderPath: String { (trimmed(cwd) as NSString).expandingTildeInPath }
+
+    private var folderChoice: Binding<String> {
+        Binding(get: { cwd }, set: { path in
+            cwd = path
+            guard folderPath != inspectedFolder else { return }
+            if command == suggestedCommand { command = "" }
+            inspectedFolder = nil
+            suggestedCommand = nil
+            selectedScript = ""
+            scripts = []
+            folderState = "Load scripts from this folder or enter a launch command."
+        })
+    }
+
+    private var managerChoice: Binding<String> {
+        Binding(get: { packageManager }, set: { manager in
+            packageManager = manager
+            if command == suggestedCommand { applySelectedScript() }
+        })
+    }
+
+    private var scriptChoice: Binding<String> {
+        Binding(get: { command == suggestedCommand ? selectedScript : "" }, set: { script in
+            selectedScript = script
+            applySelectedScript()
+        })
+    }
+
+    private var validationMessage: String? {
+        if folderPath.isEmpty { return "Choose a project folder before saving." }
+        if !isDirectory(folderPath) { return "Enter the path to an existing folder." }
+        if trimmed(name).isEmpty { return "Enter a project name." }
+        if Int(trimmed(port)).map({ (1...65535).contains($0) }) != true { return "Use a port from 1 to 65535." }
+        if trimmed(command).isEmpty { return "Select a script or enter a launch command." }
+        return nil
+    }
+
+    private func trimmed(_ value: String) -> String { value.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    private func isDirectory(_ path: String) -> Bool {
+        var directory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: path, isDirectory: &directory) && directory.boolValue
     }
 
     private func chooseFolder() {
@@ -795,45 +1309,59 @@ struct AddProjectView: View {
     }
 
     private func loadFolder() {
-        let cleaned = cwd.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleaned = folderPath
+        inspectedFolder = cleaned
         cwd = cleaned
 
-        guard FileManager.default.fileExists(atPath: cleaned) else {
-            folderState = "Folder does not exist"
+        guard isDirectory(cleaned) else {
+            folderState = "Enter the path to an existing folder."
+            if command == suggestedCommand { command = "" }
+            suggestedCommand = nil
+            selectedScript = ""
             scripts = []
             return
         }
 
-        guard let info = inspector.inspect(cwd: cleaned) else {
-            folderState = "No package.json found. You can still enter a command manually."
-            if name.isEmpty { name = URL(fileURLWithPath: cleaned).lastPathComponent }
+        let info = inspector.inspect(cwd: cleaned)
+        if trimmed(name).isEmpty || name == suggestedName {
+            name = info?.name ?? URL(fileURLWithPath: cleaned).lastPathComponent
+            suggestedName = name
+        }
+        guard let info, !info.scripts.isEmpty else {
+            folderState = "No package scripts found. Enter a launch command."
+            if command == suggestedCommand { command = "" }
+            suggestedCommand = nil
+            selectedScript = ""
             scripts = []
-            selectedScript = "dev"
-            packageManager = "npm"
-            command = "npm run dev"
             return
         }
 
-        name = info.name
+        let shouldSuggestCommand = trimmed(command).isEmpty || command == suggestedCommand
+        let preferred = info.scripts.first { $0.name == selectedScript } ?? info.scripts[0]
         packageManager = info.packageManager
+        if trimmed(port).isEmpty || port == suggestedPort {
+            port = String(info.suggestedPort)
+            suggestedPort = port
+        }
         scripts = info.scripts
-        selectedScript = info.scripts.first?.name ?? "dev"
-        port = "\(info.suggestedPort)"
-        applySelectedScript()
-        folderState = "\(info.scripts.count) scripts loaded from package.json"
+        selectedScript = preferred.name
+        if shouldSuggestCommand { applySelectedScript() }
+        folderState = "Scripts from package.json"
     }
 
     private func applySelectedScript() {
-        guard !selectedScript.isEmpty else { return }
-        command = inspector.command(packageManager: packageManager, scriptName: selectedScript)
+        guard scripts.contains(where: { $0.name == selectedScript }) else { return }
+        let generated = inspector.command(packageManager: packageManager, scriptName: selectedScript)
+        command = generated
+        suggestedCommand = generated
     }
 
     private func saveProject(start: Bool) {
-        guard let portNumber = Int(port) else { return }
+        guard validationMessage == nil, let portNumber = Int(trimmed(port)) else { return }
         let project = ManualProject(
-            name: name.trimmingCharacters(in: .whitespacesAndNewlines),
-            cwd: cwd.trimmingCharacters(in: .whitespacesAndNewlines),
-            command: command.trimmingCharacters(in: .whitespacesAndNewlines),
+            name: trimmed(name),
+            cwd: folderPath,
+            command: trimmed(command),
             port: portNumber
         )
         model.addProject(project)
@@ -846,192 +1374,203 @@ struct AddProjectView: View {
 
 struct PreferencesView: View {
     @EnvironmentObject private var model: AppModel
-    @Environment(\.dismiss) private var dismiss
     @ObservedObject private var updater = GitHubUpdater.shared
-    var onClose: (() -> Void)? = nil
+    var addProjectAction: (() -> Void)? = nil
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                sheetHeader("Preferences", systemImage: "slider.horizontal.3")
-                Spacer()
-                Button("Done") { close() }
-            }
-
-            FittingScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    SettingsBlock {
-                        HStack(spacing: 10) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Launch at login")
-                                    .font(.system(size: 13, weight: .semibold))
-                                Text("Start PortsKiller in the menu bar after macOS login.")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-
-                            Spacer()
-
-                            Toggle(
-                                "",
-                                isOn: Binding(
-                                    get: { model.loginItemEnabled },
-                                    set: { model.setLoginItemEnabled($0) }
-                                )
-                            )
-                            .labelsHidden()
-                        }
-                        Divider().padding(.vertical, 6)
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("Menu bar metric")
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                SettingsBlock {
+                    HStack(spacing: 10) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Launch at login")
                                 .font(.system(size: 13, weight: .semibold))
-
-                            Picker("Menu bar metric", selection: $model.menuBarMetric) {
-                                ForEach(MenuBarMetric.allCases) { metric in
-                                    Text(metric.title).tag(metric)
-                                }
-                            }
-                            .labelsHidden()
-                            .pickerStyle(.segmented)
+                            Text("Start PortsKiller in the menu bar after macOS login.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
+
+                        Spacer()
+
+                        Toggle(
+                            "",
+                            isOn: Binding(
+                                get: { model.loginItemEnabled },
+                                set: { model.setLoginItemEnabled($0) }
+                            )
+                        )
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                        .accessibilityLabel("Launch at login")
                     }
+                    WorkspaceSeparator().padding(.vertical, 4)
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Menu bar metric")
+                            .font(.system(size: 13, weight: .semibold))
 
-                    SettingsBlock {
-                        VStack(alignment: .leading, spacing: 12) {
-                            if FeatureFlags.sessionRecovery {
-                                HStack(spacing: 10) {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text("Codex session recovery")
-                                            .font(.system(size: 13, weight: .semibold))
-                                        Text("Disable to stop reading ~/.codex sessions and skip resume attempts when apps crash.")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-
-                                    Spacer()
-
-                                    Toggle(
-                                        "",
-                                        isOn: Binding(
-                                            get: { model.isSessionRecoveryEnabled },
-                                            set: { model.setSessionRecoveryEnabled($0) }
-                                        )
-                                    )
-                                    .labelsHidden()
-                                }
+                        Picker("Menu bar metric", selection: $model.menuBarMetric) {
+                            ForEach(MenuBarMetric.allCases) { metric in
+                                Text(metric.title).tag(metric)
                             }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.segmented)
+                    }
+                }
 
+                SettingsBlock {
+                    VStack(alignment: .leading, spacing: 12) {
+                        if FeatureFlags.sessionRecovery {
                             HStack(spacing: 10) {
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text("Software updates")
+                                    Text("Codex session recovery")
                                         .font(.system(size: 13, weight: .semibold))
-                                    Text(updateStatusText)
+                                    Text("Disable to stop reading ~/.codex sessions and skip resume attempts when apps crash.")
                                         .font(.caption)
-                                        .foregroundStyle(updateStatusColor)
-                                        .lineLimit(2)
+                                        .foregroundStyle(.secondary)
                                 }
 
                                 Spacer()
 
+                                Toggle(
+                                    "",
+                                    isOn: Binding(
+                                        get: { model.isSessionRecoveryEnabled },
+                                        set: { model.setSessionRecoveryEnabled($0) }
+                                    )
+                                )
+                                .labelsHidden()
+                                .toggleStyle(.switch)
+                                .controlSize(.small)
+                                .accessibilityLabel("Codex session recovery")
+                            }
+                        }
+
+                        HStack(spacing: 10) {
+                            Text("Software updates")
+                                .font(.system(size: 13, weight: .semibold))
+                                .accessibilityAddTraits(.isHeader)
+                            Spacer(minLength: 0)
+                            if updater.isAvailable {
                                 Button {
                                     updater.checkForUpdates(manual: true)
                                 } label: {
-                                    Label(updater.isChecking ? "Checking" : "Check", systemImage: "arrow.clockwise")
+                                    Label(updater.isChecking ? "Checking…" : "Check for Updates", systemImage: "arrow.clockwise")
                                 }
-                                .disabled(updater.isChecking)
+                                .disabled(updater.isChecking || updater.isDownloading)
                                 .controlSize(.small)
+                                .fixedSize()
                             }
+                        }
+
+                        Text(updater.isAvailable ? "Installed version \(updater.currentVersion)" : "This build: \(updater.currentVersion)")
+                            .font(.caption)
+                            .foregroundStyle(WorkspaceStyle.mutedInk)
+
+                        if updater.isAvailable {
+                            updateFeedback
 
                             Toggle("Automatically check for updates", isOn: $updater.automaticallyChecksForUpdates)
-                                .font(.system(size: 12, weight: .medium))
+                                .font(.callout)
+                                .toggleStyle(.switch)
+                                .controlSize(.small)
 
                             Toggle("Automatically download updates", isOn: $updater.automaticallyDownloadsUpdates)
-                                .font(.system(size: 12, weight: .medium))
+                                .font(.callout)
+                                .toggleStyle(.switch)
+                                .controlSize(.small)
                                 .disabled(!updater.automaticallyChecksForUpdates)
-
-                            if updater.isDownloading {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    ProgressView(value: updater.downloadProgress)
-                                    Text("Downloading update \(Int(updater.downloadProgress * 100))%")
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                }
-                            } else if updater.updateAvailable {
-                                HStack(spacing: 8) {
-                                    Text("Version \(updater.latestVersion ?? "") is available")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                    Spacer()
-                                    Button {
-                                        updater.startDownload()
-                                    } label: {
-                                        Label("Install", systemImage: "square.and.arrow.down")
-                                    }
-                                    .disabled(updater.downloadURL == nil)
-                                    .controlSize(.small)
-                                }
-                            }
-                        }
-                    }
-
-                    HStack {
-                        Text("Projects")
-                            .font(.system(size: 13, weight: .semibold))
-                        Spacer()
-                        if !model.projects.isEmpty {
-                            Text(verbatim: "\(model.projects.count)")
-                                .font(.caption.monospacedDigit())
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-
-                    VStack(spacing: 8) {
-                        if model.projects.isEmpty {
-                            SettingsBlock {
-                                Text("No saved projects")
-                                    .font(.system(size: 13, weight: .medium))
-                                    .foregroundStyle(.secondary)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(.vertical, 8)
-                            }
+                                .help(updater.automaticallyChecksForUpdates ? "Downloads updates before asking to install." : "Turn on automatic checks first.")
                         } else {
-                            ForEach(model.projects) { project in
-                                ProjectPreferenceRow(project: project)
-                                    .environmentObject(model)
-                            }
+                            Text("To update, open the copy of PortsKiller in Applications.")
+                                .font(.caption)
+                                .foregroundStyle(WorkspaceStyle.mutedInk)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                     }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+
+                HStack {
+                    Text("Projects")
+                        .font(.system(size: 13, weight: .semibold))
+                    Spacer()
+                    if !model.projects.isEmpty {
+                        Text(verbatim: "\(model.projects.count)")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                VStack(spacing: 3) {
+                    if model.projects.isEmpty {
+                        SettingsBlock {
+                            HStack(spacing: 10) {
+                                Text("No saved projects")
+                                    .font(.callout)
+                                    .foregroundStyle(WorkspaceStyle.mutedInk)
+                                Spacer(minLength: 0)
+                                if let addProjectAction {
+                                    Button(action: addProjectAction) {
+                                        Label("Add Project", systemImage: "plus")
+                                    }
+                                    .controlSize(.small)
+                                    .fixedSize()
+                                    .accessibilityIdentifier("settings.add-project")
+                                }
+                            }
+                        }
+                    } else {
+                        ForEach(model.projects) { project in
+                            ProjectPreferenceRow(project: project)
+                                .environmentObject(model)
+                        }
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, WorkspaceStyle.gutter)
+            .padding(.bottom, 16)
+        }
+    }
+
+    @ViewBuilder private var updateFeedback: some View {
+        if updater.isDownloading {
+            ProgressView("Downloading update", value: updater.downloadProgress)
+                .controlSize(.small)
+        } else if updater.isChecking {
+            Text("Checking GitHub Releases…")
+                .font(.caption)
+                .foregroundStyle(WorkspaceStyle.mutedInk)
+        } else {
+            if let error = updater.error {
+                Label(error, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if updater.updateAvailable, let version = updater.latestVersion, updater.downloadURL != nil {
+                HStack(spacing: 8) {
+                    Text("Version \(version) available")
+                        .font(.callout)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                    Button {
+                        updater.startDownload()
+                    } label: {
+                        Label("Download Update", systemImage: "square.and.arrow.down")
+                    }
+                    .controlSize(.small)
+                    .fixedSize()
+                    .help("Downloads the update. Installation requires confirmation.")
+                }
+            } else if updater.error == nil, updater.latestVersion != nil {
+                Text("You’re up to date.")
+                    .font(.caption)
+                    .foregroundStyle(WorkspaceStyle.mutedInk)
             }
         }
-        .padding(20)
-        .screenBoundedPanel(onClose == nil ? .preferences : .processes)
-    }
-
-    private func close() {
-        if let onClose {
-            onClose()
-        } else {
-            dismiss()
-        }
-    }
-
-    private var updateStatusText: String {
-        if let error = updater.error {
-            return "Installed \(updater.currentVersion). \(error)"
-        }
-        if updater.isChecking {
-            return "Installed \(updater.currentVersion). Checking GitHub Releases…"
-        }
-        if let latestVersion = updater.latestVersion {
-            return "Installed \(updater.currentVersion), latest \(latestVersion)"
-        }
-        return "Installed \(updater.currentVersion)"
-    }
-
-    private var updateStatusColor: Color {
-        updater.error == nil ? Color.secondary : Color.red
     }
 }
 
@@ -1066,10 +1605,12 @@ private struct ScriptPreviewList: View {
                     } label: {
                         HStack(spacing: 8) {
                             Image(systemName: selectedScript == script.name ? "checkmark.circle.fill" : "circle")
-                                .foregroundStyle(selectedScript == script.name ? .green : .secondary)
+                                .foregroundStyle(selectedScript == script.name ? WorkspaceStyle.ink : WorkspaceStyle.mutedInk)
 
                             Text(script.name)
                                 .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                                .lineLimit(1)
+                                .truncationMode(.middle)
                                 .frame(width: 92, alignment: .leading)
 
                             Text(script.body)
@@ -1082,14 +1623,10 @@ private struct ScriptPreviewList: View {
                         }
                         .padding(.horizontal, 9)
                         .padding(.vertical, 7)
-                        .background(
-                            selectedScript == script.name
-                                ? Color.green.opacity(0.10)
-                                : Color(nsColor: .controlBackgroundColor),
-                            in: RoundedRectangle(cornerRadius: 7)
-                        )
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(WorkspaceButton(selected: selectedScript == script.name))
+                    .accessibilityAddTraits(selectedScript == script.name ? .isSelected : [])
+                    .help("\(script.name): \(script.body)")
                 }
             }
         }
@@ -1103,7 +1640,7 @@ private struct SettingsBlock<Content: View>: View {
         VStack(alignment: .leading, spacing: 10) { content }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(12)
-            .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+            .background(WorkspaceStyle.group, in: RoundedRectangle(cornerRadius: WorkspaceStyle.groupRadius))
     }
 }
 

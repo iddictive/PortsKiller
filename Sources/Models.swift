@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 struct DevProcess: Identifiable, Hashable, Sendable {
@@ -16,6 +17,8 @@ struct DevProcess: Identifiable, Hashable, Sendable {
     let resources: ResourceUsage
     let projectID: UUID?
     let inferredRestartCommand: String?
+    var identity: ProcessIdentity? = nil
+    var memberPIDs: [Int32] = []
 
     var urlString: String {
         "http://localhost:\(port)"
@@ -26,7 +29,15 @@ struct DevProcess: Identifiable, Hashable, Sendable {
     }
 
     var canStop: Bool {
-        kind != .system
+        stopUnavailableReason == nil
+    }
+
+    var stopUnavailableReason: String? {
+        if kind == .system { return "System processes are read-only." }
+        guard pid > 1, pid != getpid(), identity?.ownerUID == getuid() else {
+            return "This listener could not be verified for a safe stop."
+        }
+        return nil
     }
 
     var inferredRestartProject: ManualProject? {
