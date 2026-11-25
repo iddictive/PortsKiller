@@ -113,7 +113,6 @@ struct WorkspaceFilterField: View {
     let identifier: String
     let height: CGFloat
     var clearsOnEscape = false
-    var prominentPrompt = false
 
     var body: some View {
         HStack(spacing: 4) {
@@ -156,8 +155,10 @@ struct WorkspaceFilterField: View {
     }
 
     private var input: some View {
-        TextField(label, text: $query, prompt: Text(prompt).foregroundColor(prominentPrompt ? WorkspaceStyle.ink : WorkspaceStyle.mutedInk))
+        // The placeholder is the field’s only visible label, not secondary metadata.
+        TextField(label, text: $query, prompt: Text(prompt).foregroundColor(WorkspaceStyle.ink))
             .textFieldStyle(.plain)
+            .foregroundStyle(WorkspaceStyle.ink)
             .focused(focus)
             .accessibilityLabel(label)
             .accessibilityIdentifier(identifier)

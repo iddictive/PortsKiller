@@ -213,8 +213,7 @@ struct MenuContentView: View {
         return WorkspaceFilterField(
             query: Binding(get: { query }, set: { query = $0 }),
             focus: $searchFocused, prompt: scope.prompt, label: scope.label,
-            identifier: "workspace.filter", height: 34, clearsOnEscape: true,
-            prominentPrompt: true
+            identifier: "workspace.filter", height: 34, clearsOnEscape: true
         )
         .frame(width: showAgentPIDColumn ? 178 : 135)
         .background {
